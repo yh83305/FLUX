@@ -3,7 +3,6 @@ import random
 import torch
 import trimesh
 import numpy as np
-import open3d as o3d
 import matplotlib.pyplot as plt
 from collections import deque
 from dataclasses import MISSING
