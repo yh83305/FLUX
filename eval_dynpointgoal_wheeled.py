@@ -45,8 +45,11 @@ CUSTOM_APP_PATH = "/workspace/IsaacLab/apps/isaacsim_4_5/isaaclab.python.dyn.kit
 launcher_kwargs = {
     "headless": HEADLESS,
     "enable_cameras": True,
-    "experience": CUSTOM_APP_PATH,
 }
+if os.path.isfile(CUSTOM_APP_PATH):
+    launcher_kwargs["experience"] = CUSTOM_APP_PATH
+else:
+    print(f"[INFO] IsaacLab experience not found at {CUSTOM_APP_PATH}; using default")
 
 if MULTI_GPU:
     launcher_kwargs["multi_gpu"] = True
