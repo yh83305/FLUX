@@ -34,13 +34,22 @@ print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
 print(f"OMNI_USER_DATA_DIR: {os.environ.get('OMNI_USER_DATA_DIR', 'NOT SET')}")
 print(f"CARB_APP_DATA_DIR: {os.environ.get('CARB_APP_DATA_DIR', 'NOT SET')}")
 
+import isaaclab.app as isaaclab_app
 from isaaclab.app import AppLauncher
 
 HEADLESS = True
 MULTI_GPU = False
 NUM_GPUS = 3
 
-CUSTOM_APP_PATH = os.path.join(os.path.dirname(__file__), "apps", "flux.python.dyn.kit")
+CUSTOM_APP_PATH = os.environ.get(
+    "FLUX_DYN_EXPERIENCE",
+    os.path.join(
+        os.path.dirname(os.path.dirname(isaaclab_app.__file__)),
+        "apps",
+        "isaacsim_4_5",
+        "isaaclab.python.headless.rendering.kit",
+    ),
+)
 
 launcher_kwargs = {
     "headless": HEADLESS,
@@ -55,6 +64,10 @@ else:
 
 app_launcher = AppLauncher(**launcher_kwargs)
 simulation_app = app_launcher.app
+
+import omni.kit.app
+extension_manager = omni.kit.app.get_app().get_extension_manager()
+extension_manager.set_extension_enabled_immediate("omni.anim.people", True)
 
 if MULTI_GPU:
     import carb
