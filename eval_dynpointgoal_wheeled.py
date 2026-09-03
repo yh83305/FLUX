@@ -28,13 +28,14 @@ args_cli = parser.parse_args()
 import os
 import sys
 import json
+import inspect
 from datetime import datetime
+from pathlib import Path
 
 print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
 print(f"OMNI_USER_DATA_DIR: {os.environ.get('OMNI_USER_DATA_DIR', 'NOT SET')}")
 print(f"CARB_APP_DATA_DIR: {os.environ.get('CARB_APP_DATA_DIR', 'NOT SET')}")
 
-import isaaclab.app as isaaclab_app
 from isaaclab.app import AppLauncher
 
 HEADLESS = True
@@ -43,11 +44,11 @@ NUM_GPUS = 3
 
 CUSTOM_APP_PATH = os.environ.get(
     "FLUX_DYN_EXPERIENCE",
-    os.path.join(
-        os.path.dirname(os.path.dirname(isaaclab_app.__file__)),
-        "apps",
-        "isaacsim_4_5",
-        "isaaclab.python.headless.rendering.kit",
+    str(
+        Path(inspect.getfile(AppLauncher)).resolve().parents[1]
+        / "apps"
+        / "isaacsim_4_5"
+        / "isaaclab.python.headless.rendering.kit"
     ),
 )
 
