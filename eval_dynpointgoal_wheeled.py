@@ -22,10 +22,13 @@ parser.add_argument("--num_episodes", type=int, default=100, help="Number of epi
 parser.add_argument("--speed", type=float, default=0.5, help="Desired linear speed (m/s)")
 parser.add_argument("--port", type=int, default=9999, help="NavDP server port")
 parser.add_argument("--gpu_id", type=int, default=0, help="CUDA device id when not using multi-GPU")
+parser.add_argument("--output_dir", type=str, default="./metrics", help="Evaluation output root")
 args_cli = parser.parse_args()
 
 import os
 import sys
+import json
+from datetime import datetime
 
 print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
 print(f"OMNI_USER_DATA_DIR: {os.environ.get('OMNI_USER_DATA_DIR', 'NOT SET')}")
@@ -86,7 +89,7 @@ from utils_tasks.basic_utils import PlanningInput, PlanningOutput, find_usd_path
 from configs.robots import *
 from configs.scenes import *
 from configs.tasks import *
-from utils_tasks.client_utils import navigator_reset, pointgoal_step
+from utils_tasks.client_utils import navigator_health, navigator_reset, pointgoal_step
 from utils_tasks.visualization_utils import VisualizationManager
 from utils_tasks.tracking_utils import MPC_Controller
 from utils_tasks.sim_utils import cleanup_simulation, register_signal_handlers, setup_all_lighting
@@ -99,6 +102,7 @@ output_lock = threading.Lock()
 stop_event = threading.Event()
 vis_manager = [VisualizationManager(history_size=5) for i in range(args_cli.num_envs)]
 mpc = None
+MODE_DEBUG_VISUALIZATION_ALGOS = {"flux_explicit_modes_rule16"}
 
 register_signal_handlers(
     get_env=lambda: globals().get("env", None),
@@ -126,8 +130,16 @@ def planning_thread(env, camera_intrinsic):
             with output_lock:
                 planning_output.is_planning = True
 
-            trajectory_points_camera, all_trajectories_camera, all_values_camera = pointgoal_step(
-                goal, image, depth, port=args_cli.port
+            result = pointgoal_step(goal, image, depth, port=args_cli.port)
+            trajectory_points_camera, all_trajectories_camera, all_values_camera = result[:3]
+            mode_debug = (
+                result[3]
+                if len(result) >= 4
+                and isinstance(result[3], list)
+                and result[3]
+                and isinstance(result[3][0], dict)
+                and "candidate_debug" in result[3][0]
+                else None
             )
 
             batch_optimal_points_world = []
@@ -165,7 +177,10 @@ def planning_thread(env, camera_intrinsic):
             with output_lock:
                 planning_output.trajectory_points_world = batch_optimal_points_world
                 planning_output.all_trajectories_world = batch_all_points_world
+                planning_output.all_trajectories_camera = all_trajectories_camera.copy()
+                planning_output.point_goals_camera = goal.copy()
                 planning_output.all_values_camera = all_values_camera
+                planning_output.mode_debug = mode_debug
                 planning_output.is_planning = False
                 planning_output.planning_error = None
 
@@ -286,11 +301,40 @@ def main():
 
     print(f"[INFO] Connected to navigator server, algorithm: {algo}")
 
+    try:
+        server_metadata = navigator_health(port=args_cli.port)
+    except Exception as error:
+        server_metadata = {"health_error": repr(error)}
+
     episode_num = 0
     evaluation_metrics = []
     current_episode_idx = 0
-    save_dir = "./metrics/dynpointgoal_%s_%s/%s/" % (algo, args_cli.scene_dir.split("/")[-1], scene_path.split("/")[-2])
+    run_started_at = datetime.now().astimezone()
+    run_timestamp = run_started_at.strftime("%Y%m%d_%H%M%S")
+    save_dir = os.path.join(
+        args_cli.output_dir,
+        "dynpointgoal_%s_%s" % (algo, os.path.basename(os.path.normpath(args_cli.scene_dir))),
+        "%s_%s" % (scene_name, run_timestamp),
+    ) + "/"
     os.makedirs(save_dir, exist_ok=True)
+    run_metadata = {
+        "started_at": run_started_at.isoformat(),
+        "algorithm": algo,
+        "scene_dir": os.path.abspath(args_cli.scene_dir),
+        "scene_index": args_cli.scene_index,
+        "scene_name": scene_name,
+        "scene_path": scene_path,
+        "scene_scale": args_cli.scene_scale,
+        "num_envs": args_cli.num_envs,
+        "num_episodes": args_cli.num_episodes,
+        "speed": args_cli.speed,
+        "stop_threshold": args_cli.stop_threshold,
+        "server_port": args_cli.port,
+        "server": server_metadata,
+    }
+    with open(os.path.join(save_dir, "run_metadata.json"), "w", encoding="utf-8") as file:
+        json.dump(run_metadata, file, ensure_ascii=False, indent=2)
+    print(f"[FLUX Eval] output={os.path.abspath(save_dir)}")
 
     initial_distance_to_target = None
     fps_writer = [imageio.get_writer(save_dir + "fps_%d.mp4" % i, fps=10) for i in range(scene_config.num_envs)]
@@ -401,16 +445,26 @@ def main():
                 current_trajectory = None
                 current_all_trajectories = None
                 current_all_values = None
+                current_mode_debug = None
                 with output_lock:
                     if planning_output.trajectory_points_world is not None:
                         current_trajectory = planning_output.trajectory_points_world.copy()
                         current_all_trajectories = planning_output.all_trajectories_world.copy()
                         current_all_values = planning_output.all_values_camera.copy()
+                        current_mode_debug = planning_output.mode_debug
 
                 if current_trajectory is not None:
                     action_list = []
                     for i in range(args_cli.num_envs):
                         people_positions, people_char_paths, pos_get_flag = get_people_positions(env)
+                        mode_render_kwargs = {}
+                        if algo in MODE_DEBUG_VISUALIZATION_ALGOS and current_mode_debug:
+                            debug_item = current_mode_debug[i] if i < len(current_mode_debug) else {}
+                            candidate_debug = debug_item.get("candidate_debug", [])
+                            mode_render_kwargs = {
+                                "all_trajectories_modes": [item.get("mode", index) for index, item in enumerate(candidate_debug)],
+                                "selected_trajectory_index": debug_item.get("selected_index"),
+                            }
 
                         if pos_get_flag:
                             social_metrics_trackers[i].update(camera_pos[i], people_positions, env.unwrapped.step_dt)
@@ -424,6 +478,7 @@ def main():
                                 all_trajectories_values=current_all_values[i],
                                 people_positions=people_positions,
                                 people_positions_dict=people_char_paths,
+                                **mode_render_kwargs,
                             )
                         else:
                             vis_image = vis_manager[i].visualize_trajectory_global(
@@ -556,7 +611,10 @@ def main():
                         with output_lock:
                             planning_output.trajectory_points_world = None
                             planning_output.all_trajectories_world = None
+                            planning_output.all_trajectories_camera = None
+                            planning_output.point_goals_camera = None
                             planning_output.all_values_camera = None
+                            planning_output.mode_debug = None
                             planning_output.is_planning = False
                             planning_output.planning_error = None
 
