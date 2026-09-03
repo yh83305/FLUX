@@ -40,16 +40,13 @@ HEADLESS = True
 MULTI_GPU = False
 NUM_GPUS = 3
 
-CUSTOM_APP_PATH = "/workspace/IsaacLab/apps/isaacsim_4_5/isaaclab.python.dyn.kit"
+CUSTOM_APP_PATH = os.path.join(os.path.dirname(__file__), "apps", "flux.python.dyn.kit")
 
 launcher_kwargs = {
     "headless": HEADLESS,
     "enable_cameras": True,
 }
-if os.path.isfile(CUSTOM_APP_PATH):
-    launcher_kwargs["experience"] = CUSTOM_APP_PATH
-else:
-    print(f"[INFO] IsaacLab experience not found at {CUSTOM_APP_PATH}; using default")
+launcher_kwargs["experience"] = CUSTOM_APP_PATH
 
 if MULTI_GPU:
     launcher_kwargs["multi_gpu"] = True
