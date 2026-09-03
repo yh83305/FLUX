@@ -45,7 +45,7 @@ NUM_GPUS = 3
 CUSTOM_APP_PATH = os.environ.get(
     "FLUX_DYN_EXPERIENCE",
     str(
-        Path(inspect.getfile(AppLauncher)).resolve().parents[1]
+        Path(inspect.getfile(AppLauncher)).resolve().parents[4]
         / "apps"
         / "isaacsim_4_5"
         / "isaaclab.python.headless.rendering.kit"
