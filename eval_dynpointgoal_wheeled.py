@@ -258,7 +258,6 @@ def main():
     scene_config.camera_sensor = DINGO_CameraCfg
     scene_config.contact_sensor = DINGO_ContactCfg
 
-    scene_config.episode_json_path = first_episode_path
 
     env_config = DingoDynPointGoalCfg()
     env_config.scene = scene_config
@@ -631,8 +630,6 @@ def main():
                             planning_output.planning_error = None
 
                         new_episode_path = os.path.join(scene_path, f"episode_{current_episode_idx}.json")
-                        env.unwrapped.scene.cfg.episode_json_path = new_episode_path
-
                         if env.unwrapped.scene.people is not None or env.unwrapped.scene._people_setup_in_progress:
                             while env.unwrapped.scene._people_setup_in_progress:
                                 simulation_app.update()
