@@ -76,7 +76,6 @@ import numpy as np
 import imageio
 import csv
 import torch
-import open3d as o3d
 import asyncio
 from scipy.spatial.transform import Rotation as R
 from pxr import Usd, Sdf
