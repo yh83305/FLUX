@@ -92,12 +92,6 @@ class SocialNavSceneCfg(InteractiveSceneCfg):
     camera_sensor: CameraCfg = MISSING
     goal: AssetBaseCfg = MISSING
     
-    def __post_init__(self):
-        """Post initialization to set default values for people simulation."""
-        # Enable people simulation by default for social nav
-        if not hasattr(self, 'people_simulation'):
-            self.people_simulation = True
-    
 @configclass
 class DynPointGoalSceneCfg(InteractiveSceneCfg):
     """动态点导航场景 - 目标是单个移动行人
@@ -117,12 +111,6 @@ class DynPointGoalSceneCfg(InteractiveSceneCfg):
     camera_sensor: CameraCfg = MISSING
     goal: AssetBaseCfg = MISSING
 
-    def __post_init__(self):
-        """Post initialization to set default values for people simulation."""
-        if not hasattr(self, 'people_simulation'):
-            self.people_simulation = True
-        self.enable_dynamic_target = True
-
 @configclass
 class DynExploreSceneCfg(InteractiveSceneCfg):
     """动态探索场景 - 在有人环境下自由探索
@@ -140,13 +128,6 @@ class DynExploreSceneCfg(InteractiveSceneCfg):
     contact_sensor: ContactSensorCfg = MISSING
     camera_sensor: CameraCfg = MISSING
     metric_sensor: CameraCfg = MISSING  # For occupancy mapping
-
-    def __post_init__(self):
-        """Post initialization to set default values for people simulation."""
-        if not hasattr(self, 'people_simulation'):
-            self.people_simulation = True
-        # self.enable_exploration = True  # ← 启用探索模式
-
 
     
 

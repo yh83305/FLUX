@@ -258,7 +258,6 @@ def main():
     scene_config.camera_sensor = DINGO_CameraCfg
     scene_config.contact_sensor = DINGO_ContactCfg
 
-    scene_config.people_simulation = True
     scene_config.episode_json_path = first_episode_path
 
     env_config = DingoDynPointGoalCfg()
@@ -369,7 +368,7 @@ def main():
         ])
         vis_manager[i].reset(initial_robot_pose=initial_pose)
 
-    if scene_config.people_simulation:
+    if getattr(env_config, "people_simulation", False):
         print("Waiting for NavMesh to be ready...")
         wait_count = 0
         while not env.unwrapped.scene.navmesh_ready and wait_count < 100:
