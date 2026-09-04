@@ -270,8 +270,19 @@ def main():
     }
     print(f"[DEBUG] Episode JSON dir: {scene_path}")
     print(f"[DEBUG] First episode path: {first_episode_path}")
+    for group_cfg in vars(env_config.observations).values():
+        if group_cfg is not None:
+            group_cfg.concatenate_terms = False
     env = ManagerBasedRLEnv(env_config)
     env = RslRlVecEnvWrapper(env)
+    if getattr(env_config, "people_simulation", False) and not hasattr(
+        env.unwrapped.scene, "_reset_people_for_episode"
+    ):
+        raise RuntimeError(
+            "DynBench requires FLUX's dynamic IsaacLab scene extension. "
+            "The active IsaacLab environment only provides InteractiveScene; "
+            "run FLUX in its Docker/IsaacLab fork environment."
+        )
     adjust_usd_scale(scale=args_cli.scene_scale)
 
     episode_steps = np.zeros((scene_config.num_envs,), dtype=np.int64)
@@ -368,23 +379,14 @@ def main():
         vis_manager[i].reset(initial_robot_pose=initial_pose)
 
     if getattr(env_config, "people_simulation", False):
-        print("Waiting for NavMesh to be ready...")
-        wait_count = 0
-        while not env.unwrapped.scene.navmesh_ready and wait_count < 100:
-            simulation_app.update()
-            wait_count += 1
-            if wait_count % 20 == 0:
-                print(f"  Waiting... ({wait_count}/100)")
-
-        if env.unwrapped.scene.navmesh_ready:
-            print("NavMesh ready.")
-        else:
+        navmesh_ready = getattr(env.unwrapped.scene, "navmesh_ready", True)
+        if not navmesh_ready:
             print("Warning: NavMesh not ready, continuing without people")
 
     print("[INFO] Waiting for people to respawn...")
     wait_count = 0
     max_wait = 500
-    while env.unwrapped.scene._people_setup_in_progress and wait_count < max_wait:
+    while getattr(env.unwrapped.scene, "_people_setup_in_progress", False) and wait_count < max_wait:
         simulation_app.update()
         wait_count += 1
         if wait_count % 50 == 0:
@@ -630,21 +632,21 @@ def main():
                             planning_output.planning_error = None
 
                         new_episode_path = os.path.join(scene_path, f"episode_{current_episode_idx}.json")
-                        if env.unwrapped.scene.people is not None or env.unwrapped.scene._people_setup_in_progress:
-                            while env.unwrapped.scene._people_setup_in_progress:
+                        if getattr(env.unwrapped.scene, "people", None) is not None or getattr(env.unwrapped.scene, "_people_setup_in_progress", False):
+                            while getattr(env.unwrapped.scene, "_people_setup_in_progress", False):
                                 simulation_app.update()
 
                             asyncio.ensure_future(env.unwrapped.scene._reset_people_for_episode(new_episode_path))
 
                             wait_count = 0
-                            while not env.unwrapped.scene._people_setup_in_progress and wait_count < 10:
+                            while not getattr(env.unwrapped.scene, "_people_setup_in_progress", False) and wait_count < 10:
                                 simulation_app.update()
                                 wait_count += 1
 
                             print("[INFO] Waiting for people to respawn...")
                             wait_count = 0
                             max_wait = 500
-                            while env.unwrapped.scene._people_setup_in_progress and wait_count < max_wait:
+                            while getattr(env.unwrapped.scene, "_people_setup_in_progress", False) and wait_count < max_wait:
                                 simulation_app.update()
                                 wait_count += 1
                                 if wait_count % 50 == 0:
