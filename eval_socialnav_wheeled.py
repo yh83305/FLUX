@@ -104,6 +104,91 @@ stop_event = threading.Event()
 vis_manager = [VisualizationManager(history_size=5) for i in range(args_cli.num_envs)]
 mpc = None
 
+MODE_DEBUG_ALGOS = {"flux_explicit_modes_rule16", "flux_direction5_speed3_rule16",
+                    "flux_predicted_prototype_rule16", "flux_gt_factorized_rule16"}
+
+
+def _number(value, signed=False):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "--"
+    if not np.isfinite(value):
+        return "--"
+    return f"{value:+.2f}" if signed else f"{value:.2f}"
+
+
+def draw_mode_debug_panel(image, debug):
+    """Append the explicit-mode candidate selection table."""
+    rows = debug.get("candidate_debug", []) if isinstance(debug, dict) else []
+    panel = np.full((image.shape[0], 620, 3), (18, 22, 28), dtype=np.uint8)
+    cv2.putText(panel, f"MODE SELECT: {debug.get('selection_reason', 'unknown')}",
+                (12, 24), cv2.FONT_HERSHEY_SIMPLEX, .58, (255, 255, 255), 1, cv2.LINE_AA)
+    columns = ((8, "idx"), (45, "mode"), (92, "P"), (132, "safe"),
+               (174, "ent"), (213, "goal"), (281, "esdf"), (351, "unk"),
+               (395, "temp"), (458, "final"), (530, "filter"))
+    for x, label in columns:
+        cv2.putText(panel, label, (x, 52), cv2.FONT_HERSHEY_SIMPLEX,
+                    .38, (190, 200, 210), 1, cv2.LINE_AA)
+    for line, row in enumerate(rows):
+        selected, safe = bool(row.get("selected")), bool(row.get("safe"))
+        color = (20, 220, 255) if selected else ((80, 220, 100) if safe else (100, 110, 125))
+        y = 78 + line * 24
+        values = ((8, f"{row.get('index', -1):02d}"), (45, f"m{row.get('mode', -1)}"),
+                  (92, _number(row.get("prior"))), (132, "Y" if safe else "N"),
+                  (174, "Y" if row.get("entered_selection") else "N"),
+                  (213, _number(row.get("goal_score"), True)),
+                  (281, _number(row.get("minimum_esdf_clearance_m"), True)),
+                  (351, _number(row.get("unknown_fraction"))),
+                  (395, _number(row.get("temporal_cost"))),
+                  (458, _number(row.get("final_score"), True)),
+                  (530, str(row.get("filtered_reason") or ("SELECTED" if selected else "-"))))
+        for x, value in values:
+            cv2.putText(panel, value, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                        .36, color, 1, cv2.LINE_AA)
+    return np.concatenate((image, panel), axis=1)
+
+
+def draw_esdf_candidates(size, trajectories, goal, debug):
+    """Render ESDF, all candidates and the selected solution in camera coordinates."""
+    canvas = np.zeros((size, size, 3), dtype=np.uint8)
+    meta = debug.get("esdf_debug", {}) if isinstance(debug, dict) else {}
+    esdf = np.asarray(meta.get("slice", []), dtype=np.uint8)
+    if esdf.ndim != 2 or not esdf.size:
+        return canvas
+    colored = cv2.cvtColor(cv2.applyColorMap(255 - esdf, cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+    colored = cv2.resize(colored, (size, size), interpolation=cv2.INTER_NEAREST)
+    canvas[:] = colored
+    origin_r, origin_f = meta.get("grid_origin_right_forward_m", [-2., 0.])
+    voxel = max(float(meta.get("voxel_size_m", .05)), 1e-6)
+    sx, sy = size / esdf.shape[1], size / esdf.shape[0]
+    rows = debug.get("candidate_debug", [])
+    selected = int(debug.get("selected_index", -1))
+    colors = ((50, 120, 255), (0, 220, 255), (60, 255, 80), (255, 80, 50), (230, 80, 255))
+    for index, trajectory in enumerate(np.asarray(trajectories)):
+        px = (-(trajectory[:, 1]) - float(origin_r)) / voxel * sx
+        py = (esdf.shape[0] - 1 - (trajectory[:, 0] - float(origin_f)) / voxel) * sy
+        points = np.rint(np.stack((px, py), 1)).astype(np.int32)
+        valid = ((points[:, 0] >= 0) & (points[:, 0] < size) &
+                 (points[:, 1] >= 0) & (points[:, 1] < size))
+        points = points[valid]
+        if len(points) < 2:
+            continue
+        mode = int(rows[index].get("mode", -1)) if index < len(rows) else -1
+        color = (255, 255, 0) if index == selected else colors[mode % len(colors)]
+        cv2.polylines(canvas, [points], False, color, 5 if index == selected else 2, cv2.LINE_AA)
+        cv2.putText(canvas, f"m{mode}", tuple(points[-1]), cv2.FONT_HERSHEY_SIMPLEX,
+                    .42, color, 1, cv2.LINE_AA)
+    goal = np.asarray(goal).reshape(-1)
+    if len(goal) >= 2:
+        gx = int(round((-goal[1] - float(origin_r)) / voxel * sx))
+        gy = int(round((esdf.shape[0] - 1 - (goal[0] - float(origin_f)) / voxel) * sy))
+        cv2.drawMarker(canvas, (int(np.clip(gx, 8, size-8)), int(np.clip(gy, 8, size-8))),
+                       (255, 255, 255), cv2.MARKER_CROSS, 18, 2, cv2.LINE_AA)
+    cv2.putText(canvas, "ESDF + candidates (yellow=selected)", (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, .48, (255, 255, 255), 1, cv2.LINE_AA)
+    return canvas
+
 register_signal_handlers(
     get_env=lambda: globals().get("env", None),
     get_simulation_app=lambda: globals().get("simulation_app", None),
@@ -133,6 +218,7 @@ def planning_thread(env, camera_intrinsic):
             trajectory_points_camera, all_trajectories_camera, all_values_camera, debug_payload = pointgoal_step(
                 goal, image, depth, port=args_cli.port, return_debug=True
             )
+            mode_debug = debug_payload.get("selector_diagnostics")
 
             batch_optimal_points_world = []
             for idx in range(trajectory_points_camera.shape[0]):
@@ -169,7 +255,10 @@ def planning_thread(env, camera_intrinsic):
             with output_lock:
                 planning_output.trajectory_points_world = batch_optimal_points_world
                 planning_output.all_trajectories_world = batch_all_points_world
+                planning_output.all_trajectories_camera = all_trajectories_camera.copy()
+                planning_output.point_goals_camera = goal.copy()
                 planning_output.all_values_camera = all_values_camera
+                planning_output.mode_debug = mode_debug
                 planning_output.is_planning = False
                 planning_output.planning_error = None
 
@@ -355,11 +444,17 @@ def main():
                 current_trajectory = None
                 current_all_trajectories = None
                 current_all_values = None
+                current_all_trajectories_camera = None
+                current_point_goals_camera = None
+                current_mode_debug = None
                 with output_lock:
                     if planning_output.trajectory_points_world is not None:
                         current_trajectory = planning_output.trajectory_points_world.copy()
                         current_all_trajectories = planning_output.all_trajectories_world.copy()
                         current_all_values = planning_output.all_values_camera.copy()
+                        current_all_trajectories_camera = planning_output.all_trajectories_camera.copy()
+                        current_point_goals_camera = planning_output.point_goals_camera.copy()
+                        current_mode_debug = planning_output.mode_debug
 
                 if current_trajectory is not None:
                     goal_world = camera_pos[0] + camera_rot[0] @ np.array([goals[0][0], goals[0][1], 0.0])
@@ -389,6 +484,17 @@ def main():
                                 all_trajectories_points=current_all_trajectories[i],
                                 all_trajectories_values=current_all_values[i]
                             )
+
+                        use_mode_debug = (algo in MODE_DEBUG_ALGOS and current_mode_debug
+                                          and i < len(current_mode_debug))
+                        if use_mode_debug:
+                            esdf_view = draw_esdf_candidates(
+                                vis_image.shape[0], current_all_trajectories_camera[i],
+                                current_point_goals_camera[i], current_mode_debug[i])
+                            # Preserve the first-person/social view and replace the existing
+                            # right-hand trajectory map with the metric ESDF decision view.
+                            vis_image[:, -vis_image.shape[0]:] = esdf_view
+                            vis_image = draw_mode_debug_panel(vis_image, current_mode_debug[i])
 
                         if mpc is None:
                             continue
