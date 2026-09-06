@@ -82,7 +82,7 @@ def nogoal_step(rgb_images,depth_images,port=8888):
     all_value = json.loads(response.text)['all_values']
     return np.array(trajectory),np.array(all_trajectory),np.array(all_value)
 
-def pointgoal_step(point_goals, rgb_images, depth_images, port=8888):
+def pointgoal_step(point_goals, rgb_images, depth_images, port=8888, return_debug=False):
     """
     点目标导航推理
     
@@ -136,16 +136,14 @@ def pointgoal_step(point_goals, rgb_images, depth_images, port=8888):
     
     # ===== 步骤5：发送请求并解析响应 =====
     response = requests.post(url, files=files, data=data)
-    trajectory = json.loads(response.text)['trajectory']
-    all_trajectory = json.loads(response.text)['all_trajectory']
-    all_value = json.loads(response.text)['all_values']
-    
-    # 可选返回：子目标（用于调试）
-    if 'sub_pointgoal_pd' in json.loads(response.text):
-        sub_pointgoal_pd = json.loads(response.text)['sub_pointgoal_pd']
-        return np.array(trajectory), np.array(all_trajectory), np.array(all_value), sub_pointgoal_pd
-    else:
-        return np.array(trajectory), np.array(all_trajectory), np.array(all_value)
+    payload = response.json()
+    result = (np.asarray(payload['trajectory']), np.asarray(payload['all_trajectory']),
+              np.asarray(payload['all_values']))
+    if return_debug:
+        return result + (payload,)
+    if 'sub_pointgoal_pd' in payload:
+        return result + (payload['sub_pointgoal_pd'],)
+    return result
 
 def imagegoal_step(image_goals,rgb_images,depth_images,port=8888):
     concat_images = np.concatenate([img for img in rgb_images],axis=0)
@@ -179,9 +177,11 @@ def imagegoal_step(image_goals,rgb_images,depth_images,port=8888):
     trajectory = json.loads(response.text)['trajectory']
     all_trajectory = json.loads(response.text)['all_trajectory']
     all_value = json.loads(response.text)['all_values']
-    return np.array(trajectory),np.array(all_trajectory),np.array(all_value)
-
-
+    result = (np.array(trajectory), np.array(all_trajectory), np.array(all_value))
+    if return_debug:
+        payload = json.loads(response.text)
+        result += (payload,)
+    return result
 
 
 

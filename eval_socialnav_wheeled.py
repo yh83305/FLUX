@@ -21,6 +21,8 @@ parser.add_argument("--num_episodes", type=int, default=100, help="Number of epi
 parser.add_argument("--speed", type=float, default=0.5, help="Desired linear speed (m/s)")
 parser.add_argument("--port", type=int, default=9999, help="NavDP server port")
 parser.add_argument("--gpu_id", type=int, default=0, help="CUDA device id when not using multi-GPU")
+parser.add_argument("--output_dir", type=str, default=None,
+                    help="Optional directory for videos and metrics")
 args_cli = parser.parse_args()
 
 import os
@@ -125,8 +127,8 @@ def planning_thread(env, camera_intrinsic):
             with output_lock:
                 planning_output.is_planning = True
 
-            trajectory_points_camera, all_trajectories_camera, all_values_camera = pointgoal_step(
-                goal, image, depth, port=args_cli.port
+            trajectory_points_camera, all_trajectories_camera, all_values_camera, debug_payload = pointgoal_step(
+                goal, image, depth, port=args_cli.port, return_debug=True
             )
 
             batch_optimal_points_world = []
@@ -267,7 +269,10 @@ def main():
     episode_num = 0
     evaluation_metrics = []
     current_episode_idx = 0
-    save_dir = "./metrics/socialgoal_%s_%s/%s/" % (algo, args_cli.scene_dir.split("/")[-1], scene_path.split("/")[-2])
+    save_dir = args_cli.output_dir or "./metrics/socialgoal_%s_%s/%s/" % (
+        algo, args_cli.scene_dir.split("/")[-1], scene_path.split("/")[-2])
+    if not save_dir.endswith(os.sep):
+        save_dir += os.sep
     os.makedirs(save_dir, exist_ok=True)
 
     euclidean = np.sqrt(np.square(infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]).sum(axis=-1))
