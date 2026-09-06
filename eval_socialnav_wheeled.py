@@ -38,7 +38,10 @@ HEADLESS = True
 MULTI_GPU = False
 NUM_GPUS = 4
 
-CUSTOM_APP_PATH = "/workspace/IsaacLab/apps/isaacsim_4_5/isaaclab.python.dyn.kit"
+CUSTOM_APP_PATH = os.environ.get(
+    "FLUX_ISAAC_EXPERIENCE",
+    "/home/yhpang/ProtoMotions/IsaacLab/apps/isaacsim_4_5/isaaclab.python.dyn.kit",
+)
 
 launcher_kwargs = {
     "headless": HEADLESS,
