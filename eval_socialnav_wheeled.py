@@ -172,6 +172,7 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
     sx, sy = size / esdf.shape[1], size / esdf.shape[0]
     rows = debug.get("candidate_debug", [])
     selected = int(debug.get("selected_index", -1))
+    safety_margin = float(meta.get("safety_margin_m", 0.10))
     values = np.asarray(
         candidate_values if candidate_values is not None else
         [row.get("final_score", np.nan) for row in rows],
@@ -199,12 +200,20 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
         valid = ((points[:, 0] >= 0) & (points[:, 0] < size) &
                  (points[:, 1] >= 0) & (points[:, 1] < size))
         points = points[valid]
+        if not bool(valid.all()):
+            last = np.rint(np.clip(
+                np.stack((px, py), axis=1)[np.flatnonzero(~valid)[0]],
+                [7, 7], [size - 8, size - 8],
+            )).astype(np.int32)
+            cv2.drawMarker(canvas, tuple(last), (255, 0, 255),
+                           cv2.MARKER_TILTED_CROSS, 14, 2, cv2.LINE_AA)
         if len(points) < 2:
             continue
         mode = int(rows[index].get("mode", -1)) if index < len(rows) else -1
+        unknown = float(rows[index].get("unknown_fraction", 0.0)) if index < len(rows) else 0.0
         color = (255, 255, 0) if index == selected else relative_score_color(index)
         cv2.polylines(canvas, [points], False, color, 5 if index == selected else 2, cv2.LINE_AA)
-        cv2.putText(canvas, f"m{mode}", tuple(points[-1]), cv2.FONT_HERSHEY_SIMPLEX,
+        cv2.putText(canvas, f"m{mode} u={unknown:.2f}", tuple(points[-1]), cv2.FONT_HERSHEY_SIMPLEX,
                     .42, color, 1, cv2.LINE_AA)
     goal = np.asarray(goal).reshape(-1)
     if len(goal) >= 2:
@@ -214,6 +223,35 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
                        (255, 255, 255), cv2.MARKER_CROSS, 18, 2, cv2.LINE_AA)
     cv2.putText(canvas, "relative score: blue=low green=mid red=high yellow=selected", (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, .48, (255, 255, 255), 1, cv2.LINE_AA)
+    # ESDF debug slices are encoded linearly over [-0.25m, +0.75m] and then
+    # displayed through the same inverted JET mapping as the map.
+    bar_x0, bar_x1 = size - 42, size - 24
+    bar_y0, bar_y1 = 52, min(size - 52, 332)
+    encoded = np.linspace(255, 0, bar_y1 - bar_y0, dtype=np.uint8)[:, None]
+    bar = cv2.cvtColor(
+        cv2.applyColorMap(encoded, cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB
+    )
+    canvas[bar_y0:bar_y1, bar_x0:bar_x1] = np.repeat(
+        bar, bar_x1 - bar_x0, axis=1
+    )
+    cv2.rectangle(canvas, (bar_x0, bar_y0), (bar_x1, bar_y1),
+                  (255, 255, 255), 1)
+    for distance, label in ((-0.25, "-0.25m"), (0.0, "0"),
+                            (safety_margin, f"safe {safety_margin:.2f}"),
+                            (0.75, "+0.75m")):
+        fraction = np.clip((distance + 0.25) / 1.0, 0.0, 1.0)
+        y = int(round(bar_y0 + fraction * (bar_y1 - bar_y0)))
+        cv2.line(canvas, (bar_x0 - 4, y), (bar_x1 + 4, y),
+                 (255, 255, 255), 1)
+        cv2.putText(canvas, label, (bar_x0 - 82, y + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, .36, (255, 255, 255), 1,
+                    cv2.LINE_AA)
+    cv2.putText(canvas, "ESDF", (bar_x0 - 12, bar_y0 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, .40, (255, 255, 255), 1,
+                cv2.LINE_AA)
+    cv2.putText(canvas, "magenta X=out of grid", (10, 46),
+                cv2.FONT_HERSHEY_SIMPLEX, .40, (255, 0, 255), 1,
+                cv2.LINE_AA)
     return canvas
 
 
