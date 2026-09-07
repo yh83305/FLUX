@@ -243,6 +243,22 @@ def validate_episode_start_state(
             f"goal={goal_error:.4f}m"
         )
 
+
+def refresh_camera_after_reset(env, simulation_app, update_count=2):
+    """Render, refresh camera buffers, and recompute reset observations."""
+    camera = env.unwrapped.scene.sensors["camera_sensor"]
+    for _ in range(int(update_count)):
+        simulation_app.update()
+    camera.update(env.unwrapped.step_dt, force_recompute=True)
+    # Materialize annotator outputs now so the first recorded frame cannot
+    # reuse RGB/depth from the terminal pose of the previous episode.
+    _ = camera.data.output["rgb"]
+    _ = camera.data.output["distance_to_image_plane"]
+    observations = env.unwrapped.observation_manager.compute()
+    print("[CAMERA RESET] refreshed RGB/depth and observations", flush=True)
+    return observations
+
+
 register_signal_handlers(
     get_env=lambda: globals().get("env", None),
     get_simulation_app=lambda: globals().get("simulation_app", None),
@@ -413,6 +429,7 @@ def main():
         np.full(args_cli.num_envs, args_cli.episode_start, dtype=np.int64),
     )
     obs, infos = env.reset()
+    infos["observations"] = refresh_camera_after_reset(env, simulation_app)
     validate_episode_start_state(
         env, infos, scene_path, args_cli.episode_start
     )
@@ -759,6 +776,9 @@ def main():
                             ),
                         )
                         obs, infos = env.reset()
+                        infos["observations"] = refresh_camera_after_reset(
+                            env, simulation_app
+                        )
                         validate_episode_start_state(
                             env, infos, scene_path, current_episode_idx
                         )
