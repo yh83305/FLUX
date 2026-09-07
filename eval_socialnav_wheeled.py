@@ -187,12 +187,18 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
         [row.get("final_score", np.nan) for row in rows],
         dtype=np.float32,
     ).reshape(-1)
-    finite_values = values[np.isfinite(values)]
-    values_min = float(finite_values.min()) if finite_values.size else 0.0
-    values_max = float(finite_values.max()) if finite_values.size else 0.0
+    safe_mask = np.asarray(
+        [bool(row.get("safe", False)) for row in rows], dtype=bool
+    )
+    if len(safe_mask) != len(values):
+        safe_mask = np.zeros(len(values), dtype=bool)
+    valid_scores = safe_mask & np.isfinite(values) & (values > -1.0e5)
+    safe_values = values[valid_scores]
+    values_min = float(safe_values.min()) if safe_values.size else 0.0
+    values_max = float(safe_values.max()) if safe_values.size else 0.0
 
     def relative_score_color(index):
-        if index >= len(values) or not np.isfinite(values[index]):
+        if index >= len(values) or not valid_scores[index]:
             return (128, 128, 128)
         spread = values_max - values_min
         relative = 0.5 if spread <= 1e-8 else float(np.clip(
@@ -220,7 +226,8 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
             continue
         mode = int(rows[index].get("mode", -1)) if index < len(rows) else -1
         unknown = float(rows[index].get("unknown_fraction", 0.0)) if index < len(rows) else 0.0
-        color = (255, 255, 0) if index == selected else relative_score_color(index)
+        selected_safe = index == selected and index < len(valid_scores) and valid_scores[index]
+        color = (255, 255, 0) if selected_safe else relative_score_color(index)
         cv2.polylines(canvas, [points], False, color, 5 if index == selected else 2, cv2.LINE_AA)
         cv2.putText(canvas, f"m{mode} u={unknown:.2f}", tuple(points[-1]), cv2.FONT_HERSHEY_SIMPLEX,
                     .42, color, 1, cv2.LINE_AA)
