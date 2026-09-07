@@ -165,6 +165,13 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
     if esdf.ndim != 2 or not esdf.size:
         return canvas
     colored = cv2.cvtColor(cv2.applyColorMap(255 - esdf, cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+    observed = np.asarray(meta.get("observed_slice", []), dtype=bool)
+    if observed.shape == esdf.shape:
+        checker = np.indices(esdf.shape).sum(axis=0) % 2
+        unknown_color = np.where(checker[..., None],
+                                 np.array([60, 60, 66]),
+                                 np.array([92, 92, 100])).astype(np.uint8)
+        colored[~observed] = unknown_color[~observed]
     colored = cv2.resize(colored, (size, size), interpolation=cv2.INTER_NEAREST)
     canvas[:] = colored
     origin_r, origin_f = meta.get("grid_origin_right_forward_m", [-2., 0.])
