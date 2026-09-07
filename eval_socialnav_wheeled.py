@@ -173,6 +173,8 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
     rows = debug.get("candidate_debug", [])
     selected = int(debug.get("selected_index", -1))
     safety_margin = float(meta.get("safety_margin_m", 0.10))
+    display_minimum = float(meta.get("display_minimum_m", -0.25))
+    display_maximum = float(meta.get("display_maximum_m", 0.60))
     values = np.asarray(
         candidate_values if candidate_values is not None else
         [row.get("final_score", np.nan) for row in rows],
@@ -223,8 +225,8 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
                        (255, 255, 255), cv2.MARKER_CROSS, 18, 2, cv2.LINE_AA)
     cv2.putText(canvas, "relative score: blue=low green=mid red=high yellow=selected", (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, .48, (255, 255, 255), 1, cv2.LINE_AA)
-    # ESDF debug slices are encoded linearly over [-0.25m, +0.75m] and then
-    # displayed through the same inverted JET mapping as the map.
+    # Use the exact range supplied by the selector. The free-space end equals
+    # clearance_cap_m, where its soft clearance bonus saturates.
     bar_x0, bar_x1 = size - 42, size - 24
     bar_y0, bar_y1 = 52, min(size - 52, 332)
     encoded = np.linspace(255, 0, bar_y1 - bar_y0, dtype=np.uint8)[:, None]
@@ -236,10 +238,13 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
     )
     cv2.rectangle(canvas, (bar_x0, bar_y0), (bar_x1, bar_y1),
                   (255, 255, 255), 1)
-    for distance, label in ((-0.25, "-0.25m"), (0.0, "0"),
+    for distance, label in ((display_minimum, f"{display_minimum:+.2f}m"), (0.0, "0"),
                             (safety_margin, f"safe {safety_margin:.2f}"),
-                            (0.75, "+0.75m")):
-        fraction = np.clip((distance + 0.25) / 1.0, 0.0, 1.0)
+                            (display_maximum, f"cap {display_maximum:.2f}m")):
+        fraction = np.clip(
+            (distance - display_minimum) /
+            max(display_maximum - display_minimum, 1e-8), 0.0, 1.0
+        )
         y = int(round(bar_y0 + fraction * (bar_y1 - bar_y0)))
         cv2.line(canvas, (bar_x0 - 4, y), (bar_x1 + 4, y),
                  (255, 255, 255), 1)
