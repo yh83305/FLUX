@@ -27,6 +27,7 @@ args_cli = parser.parse_args()
 
 import os
 import sys
+import json
 
 print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
 print(f"OMNI_USER_DATA_DIR: {os.environ.get('OMNI_USER_DATA_DIR', 'NOT SET')}")
@@ -189,6 +190,33 @@ def draw_esdf_candidates(size, trajectories, goal, debug):
                 cv2.FONT_HERSHEY_SIMPLEX, .48, (255, 255, 255), 1, cv2.LINE_AA)
     return canvas
 
+
+def validate_episode_start_pose(env, scene_path, episode_id, tolerance=0.05):
+    """Fail fast if the simulator reset does not match the named JSON episode."""
+    episode_file = os.path.join(scene_path, f"episode_{episode_id}.json")
+    with open(episode_file, "r", encoding="utf-8") as handle:
+        expected = json.load(handle)["episode"]["robot"]
+    robot = env.unwrapped.scene.articulations["robot"]
+    actual_xy = robot.data.root_pos_w[0, :2].detach().cpu().numpy()
+    quat_wxyz = robot.data.root_quat_w[0].detach().cpu().numpy()
+    actual_yaw = R.from_quat(quat_wxyz[[1, 2, 3, 0]]).as_euler("xyz")[2]
+    expected_xy = np.asarray(expected["start_pos"][:2], dtype=np.float64)
+    expected_yaw = float(expected["start_orientation"])
+    position_error = float(np.linalg.norm(actual_xy - expected_xy))
+    yaw_error = float(abs((actual_yaw - expected_yaw + np.pi) % (2*np.pi) - np.pi))
+    print(
+        f"[EPISODE POSE] id={episode_id} expected_xy={expected_xy.tolist()} "
+        f"actual_xy={actual_xy.tolist()} position_error={position_error:.5f}m "
+        f"expected_yaw={expected_yaw:.5f} actual_yaw={actual_yaw:.5f} "
+        f"yaw_error={yaw_error:.5f}rad",
+        flush=True,
+    )
+    if position_error > tolerance or yaw_error > tolerance:
+        raise RuntimeError(
+            f"episode {episode_id} reset pose mismatch: "
+            f"position={position_error:.4f}m yaw={yaw_error:.4f}rad"
+        )
+
 register_signal_handlers(
     get_env=lambda: globals().get("env", None),
     get_simulation_app=lambda: globals().get("simulation_app", None),
@@ -331,6 +359,12 @@ def main():
     for _ in range(PREHEAT_STEPS):
         action = torch.zeros((args_cli.num_envs, 2), device="cuda:0")
         obs, rewards, dones, infos = env.step(action)
+
+    # Preheating must not consume or partially advance benchmark episode 0.
+    # Force a fresh deterministic reset before opening its video/metrics row.
+    set_benchmark_episode_ids(env.unwrapped, np.zeros(args_cli.num_envs, dtype=np.int64))
+    obs, infos = env.reset()
+    validate_episode_start_pose(env, scene_path, 0)
 
     camera_intrinsic = env.unwrapped.scene.sensors['camera_sensor'].data.intrinsic_matrices[0]
 
@@ -528,11 +562,27 @@ def main():
                             pass
 
                     action = torch.as_tensor(np.stack(action_list, axis=0), device="cuda:0")
+                    set_benchmark_episode_ids(
+                        env.unwrapped,
+                        np.full(
+                            args_cli.num_envs,
+                            (current_episode_idx + 1) % args_cli.num_episodes,
+                            dtype=np.int64,
+                        ),
+                    )
                     obs, rewards, dones, infos = env.step(action)
                     episode_steps += 1
                     trajectory_length += (infos['observations']['policy'][:, 0] * env.unwrapped.step_dt).cpu().numpy()
                 else:
                     action = torch.zeros((args_cli.num_envs, 2), device="cuda:0")
+                    set_benchmark_episode_ids(
+                        env.unwrapped,
+                        np.full(
+                            args_cli.num_envs,
+                            (current_episode_idx + 1) % args_cli.num_episodes,
+                            dtype=np.int64,
+                        ),
+                    )
                     obs, rewards, dones, infos = env.step(action)
                     episode_steps += 1
                     print("Trajectory not ready; zero action")
@@ -591,6 +641,10 @@ def main():
 
                             cleanup_simulation(env, simulation_app)
                             return
+
+                        validate_episode_start_pose(
+                            env, scene_path, current_episode_idx
+                        )
 
                         if hasattr(env.env, '_recent_positions'):
                             env.env._recent_positions.clear()

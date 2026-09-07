@@ -41,6 +41,16 @@ from configs.scenes import SocialNavSceneCfg, DynPointGoalSceneCfg, DynExploreSc
 from scipy.spatial.transform import Rotation as R
 
 reset_counter = 0
+
+
+def set_benchmark_episode_ids(env, episode_ids):
+    """Pin the JSON episode selected by the next automatic environment reset."""
+    values = np.asarray(episode_ids, dtype=np.int64).reshape(-1)
+    if len(values) != env.num_envs:
+        raise ValueError(
+            f"episode_ids must contain {env.num_envs} values, got {len(values)}"
+        )
+    env._benchmark_episode_ids = values.copy()
 def camera_rgb_data(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("camera")) -> torch.Tensor:
     asset = env.scene[asset_cfg.name]
     return asset.data.output['rgb']
@@ -700,7 +710,12 @@ def socialnav_reset(env: ManagerBasedEnv,
         # episode_idx = int((i + reset_counter) % num_episodes)
         # episode_path = available_episodes[episode_idx]
         
-        episode_idx = reset_counter % num_episodes
+        forced_ids = getattr(env, "_benchmark_episode_ids", None)
+        episode_idx = (
+            int(forced_ids[int(env_ids[i])]) % num_episodes
+            if forced_ids is not None
+            else reset_counter % num_episodes
+        )
         episode_path = os.path.join(episode_json_dir, f"episode_{episode_idx}.json")
 
         # Load episode JSON
