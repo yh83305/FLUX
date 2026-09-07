@@ -17,7 +17,11 @@ parser.add_argument(
     help="Stop threshold for exploration turn (critic value)",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of parallel environments")
-parser.add_argument("--num_episodes", type=int, default=100, help="Number of episode JSON files / rollouts")
+parser.add_argument("--num_episodes", type=int, default=100, help="Number of episode rollouts to run")
+parser.add_argument(
+    "--episode_start", type=int, default=0,
+    help="First episode JSON id (allows fresh-process batched evaluation)",
+)
 parser.add_argument("--speed", type=float, default=0.5, help="Desired linear speed (m/s)")
 parser.add_argument("--port", type=int, default=9999, help="NavDP server port")
 parser.add_argument("--gpu_id", type=int, default=0, help="CUDA device id when not using multi-GPU")
@@ -99,6 +103,8 @@ from socialnav_metrics import SocialMetricsTracker, get_people_positions
 
 planning_input = PlanningInput()
 planning_output = PlanningOutput()
+planning_input.episode_generation = 0
+planning_output.episode_generation = -1
 input_lock = threading.Lock()
 output_lock = threading.Lock()
 stop_event = threading.Event()
@@ -106,7 +112,8 @@ vis_manager = [VisualizationManager(history_size=5) for i in range(args_cli.num_
 mpc = None
 
 MODE_DEBUG_ALGOS = {"flux_explicit_modes_rule16", "flux_direction5_speed3_rule16",
-                    "flux_predicted_prototype_rule16", "flux_gt_factorized_rule16"}
+                    "flux_predicted_prototype_rule16", "flux_gt_factorized_rule16",
+                    "flux_direction5_speed3_rule15", "flux_gt_factorized_rule15"}
 
 
 def _number(value, signed=False):
@@ -191,8 +198,10 @@ def draw_esdf_candidates(size, trajectories, goal, debug):
     return canvas
 
 
-def validate_episode_start_pose(env, scene_path, episode_id, tolerance=0.05):
-    """Fail fast if the simulator reset does not match the named JSON episode."""
+def validate_episode_start_state(
+    env, infos, scene_path, episode_id, tolerance=0.05
+):
+    """Fail fast unless pose and goal observation match the JSON episode."""
     episode_file = os.path.join(scene_path, f"episode_{episode_id}.json")
     with open(episode_file, "r", encoding="utf-8") as handle:
         expected = json.load(handle)["episode"]["robot"]
@@ -202,19 +211,36 @@ def validate_episode_start_pose(env, scene_path, episode_id, tolerance=0.05):
     actual_yaw = R.from_quat(quat_wxyz[[1, 2, 3, 0]]).as_euler("xyz")[2]
     expected_xy = np.asarray(expected["start_pos"][:2], dtype=np.float64)
     expected_yaw = float(expected["start_orientation"])
+    expected_goal_world = np.asarray(expected["goal_pos"][:2], dtype=np.float64)
+    world_delta = expected_goal_world - expected_xy
+    expected_goal_local = np.array((
+        np.cos(expected_yaw) * world_delta[0]
+        + np.sin(expected_yaw) * world_delta[1],
+        -np.sin(expected_yaw) * world_delta[0]
+        + np.cos(expected_yaw) * world_delta[1],
+    ))
+    actual_goal_local = (
+        infos["observations"]["goal_pose"][0, :2].detach().cpu().numpy()
+    )
     position_error = float(np.linalg.norm(actual_xy - expected_xy))
     yaw_error = float(abs((actual_yaw - expected_yaw + np.pi) % (2*np.pi) - np.pi))
+    goal_error = float(np.linalg.norm(actual_goal_local - expected_goal_local))
     print(
-        f"[EPISODE POSE] id={episode_id} expected_xy={expected_xy.tolist()} "
+        f"[EPISODE STATE] id={episode_id} expected_xy={expected_xy.tolist()} "
         f"actual_xy={actual_xy.tolist()} position_error={position_error:.5f}m "
         f"expected_yaw={expected_yaw:.5f} actual_yaw={actual_yaw:.5f} "
-        f"yaw_error={yaw_error:.5f}rad",
+        f"yaw_error={yaw_error:.5f}rad "
+        f"expected_goal_world={expected_goal_world.tolist()} "
+        f"expected_goal_local={expected_goal_local.tolist()} "
+        f"actual_goal_local={actual_goal_local.tolist()} "
+        f"goal_error={goal_error:.5f}m",
         flush=True,
     )
-    if position_error > tolerance or yaw_error > tolerance:
+    if position_error > tolerance or yaw_error > tolerance or goal_error > tolerance:
         raise RuntimeError(
-            f"episode {episode_id} reset pose mismatch: "
-            f"position={position_error:.4f}m yaw={yaw_error:.4f}rad"
+            f"episode {episode_id} reset state mismatch: "
+            f"position={position_error:.4f}m yaw={yaw_error:.4f}rad "
+            f"goal={goal_error:.4f}m"
         )
 
 register_signal_handlers(
@@ -240,6 +266,7 @@ def planning_thread(env, camera_intrinsic):
                 depth = planning_input.current_depth.copy()
                 camera_pos = planning_input.camera_pos.copy()
                 camera_rot = planning_input.camera_rot.copy()
+                episode_generation = planning_input.episode_generation
             with output_lock:
                 planning_output.is_planning = True
 
@@ -280,15 +307,25 @@ def planning_thread(env, camera_intrinsic):
                 batch_all_points_world.append(all_trajectories_world)
             batch_all_points_world = np.array(batch_all_points_world)
 
-            with output_lock:
-                planning_output.trajectory_points_world = batch_optimal_points_world
-                planning_output.all_trajectories_world = batch_all_points_world
-                planning_output.all_trajectories_camera = all_trajectories_camera.copy()
-                planning_output.point_goals_camera = goal.copy()
-                planning_output.all_values_camera = all_values_camera
-                planning_output.mode_debug = mode_debug
-                planning_output.is_planning = False
-                planning_output.planning_error = None
+            # A slow mode-conditioned request may finish after the simulator
+            # has reset into the next episode.  Check and publish under the
+            # same lock order used by reset so an old result can never be
+            # written back after the reset cleared planning_output.
+            with input_lock:
+                generation_is_current = (
+                    planning_input.episode_generation == episode_generation
+                )
+                with output_lock:
+                    if generation_is_current:
+                        planning_output.trajectory_points_world = batch_optimal_points_world
+                        planning_output.all_trajectories_world = batch_all_points_world
+                        planning_output.all_trajectories_camera = all_trajectories_camera.copy()
+                        planning_output.point_goals_camera = goal.copy()
+                        planning_output.all_values_camera = all_values_camera
+                        planning_output.mode_debug = mode_debug
+                        planning_output.episode_generation = episode_generation
+                        planning_output.planning_error = None
+                    planning_output.is_planning = False
 
         except Exception as e:
             print(f"Planning error: {e}")
@@ -299,6 +336,9 @@ def planning_thread(env, camera_intrinsic):
 
 
 def main():
+    if args_cli.episode_start < 0 or args_cli.num_episodes <= 0:
+        raise ValueError("episode_start must be non-negative and num_episodes positive")
+    episode_end = args_cli.episode_start + args_cli.num_episodes
     scene_list = os.listdir(args_cli.scene_dir)
     scene_list.sort()
 
@@ -308,18 +348,24 @@ def main():
 
     print(f"[INFO] Validating episode files in {scene_path}")
     episode_json_files = []
-    for episode_id in range(args_cli.num_episodes):
+    # The reset event validates IDs from zero through its configured count.
+    # Validate that complete prefix here while executing only the requested
+    # [episode_start, episode_end) interval below.
+    for episode_id in range(episode_end):
         episode_json_path = os.path.join(scene_path, f"episode_{episode_id}.json")
         if not os.path.exists(episode_json_path):
             raise RuntimeError(
                 f"Missing episode file: {episode_json_path}\n"
-                f"Expected {args_cli.num_episodes} episodes (0 to {args_cli.num_episodes - 1})"
+            f"Expected episode files 0 through {episode_end - 1}"
             )
         episode_json_files.append(episode_json_path)
 
-    print(f"[INFO] Found all {args_cli.num_episodes} episode files OK")
+    print(
+        f"[INFO] Found episode files 0 through {episode_end - 1} OK; "
+        f"running [{args_cli.episode_start}, {episode_end})"
+    )
 
-    first_episode_path = episode_json_files[0]
+    first_episode_path = episode_json_files[args_cli.episode_start]
 
     scene_config = SocialNavSceneCfg()
     scene_config.num_envs = args_cli.num_envs
@@ -338,7 +384,7 @@ def main():
     env_config.scene = scene_config
     env_config.events.reset_pose.params = {
         "episode_json_dir": scene_path,
-        "num_episodes": args_cli.num_episodes,
+        "num_episodes": episode_end,
         'height_offset': 0.1,
         'robot_visible': True,
         'light_enabled': False
@@ -362,9 +408,14 @@ def main():
 
     # Preheating must not consume or partially advance benchmark episode 0.
     # Force a fresh deterministic reset before opening its video/metrics row.
-    set_benchmark_episode_ids(env.unwrapped, np.zeros(args_cli.num_envs, dtype=np.int64))
+    set_benchmark_episode_ids(
+        env.unwrapped,
+        np.full(args_cli.num_envs, args_cli.episode_start, dtype=np.int64),
+    )
     obs, infos = env.reset()
-    validate_episode_start_pose(env, scene_path, 0)
+    validate_episode_start_state(
+        env, infos, scene_path, args_cli.episode_start
+    )
 
     camera_intrinsic = env.unwrapped.scene.sensors['camera_sensor'].data.intrinsic_matrices[0]
 
@@ -387,14 +438,19 @@ def main():
     if algo == "fallback_algo":
         print("[ERROR] Navigator server connection failed!")
         print(f"[INFO] Please start the server: python server.py --port {args_cli.port}")
-        cleanup_simulation(env, simulation_app)
+        cleanup_simulation(
+            env=env,
+            simulation_app=simulation_app,
+            stop_event=stop_event,
+            planning_thread_obj=planning_thread_obj,
+        )
         sys.exit(1)
 
     print(f"[INFO] Connected to navigator server, algorithm: {algo}")
 
     episode_num = 0
     evaluation_metrics = []
-    current_episode_idx = 0
+    current_episode_idx = args_cli.episode_start
     save_dir = args_cli.output_dir or "./metrics/socialgoal_%s_%s/%s/" % (
         algo, args_cli.scene_dir.split("/")[-1], scene_path.split("/")[-2])
     if not save_dir.endswith(os.sep):
@@ -402,7 +458,12 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
 
     euclidean = np.sqrt(np.square(infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]).sum(axis=-1))
-    fps_writer = [imageio.get_writer(save_dir + "fps_%d.mp4" % i, fps=10) for i in range(scene_config.num_envs)]
+    fps_writer = [
+        imageio.get_writer(
+            save_dir + "fps_%d.mp4" % (args_cli.episode_start + i), fps=10
+        )
+        for i in range(scene_config.num_envs)
+    ]
 
     trajectory_length = np.zeros((scene_config.num_envs))
 
@@ -466,6 +527,7 @@ def main():
                     planning_input.current_depth = depths.copy()
                     planning_input.camera_pos = camera_pos.copy()
                     planning_input.camera_rot = camera_rot.copy()
+                    planning_input.episode_generation = current_episode_idx
 
                 robot_vel = env.unwrapped.scene.articulations['robot'].data.root_lin_vel_w[0, :2].norm().cpu().numpy()
                 robot_ang_vel = env.unwrapped.scene.articulations['robot'].data.root_ang_vel_w[0, 2].cpu().numpy()
@@ -482,7 +544,10 @@ def main():
                 current_point_goals_camera = None
                 current_mode_debug = None
                 with output_lock:
-                    if planning_output.trajectory_points_world is not None:
+                    if (
+                        planning_output.trajectory_points_world is not None
+                        and planning_output.episode_generation == current_episode_idx
+                    ):
                         current_trajectory = planning_output.trajectory_points_world.copy()
                         current_all_trajectories = planning_output.all_trajectories_world.copy()
                         current_all_values = planning_output.all_values_camera.copy()
@@ -555,6 +620,12 @@ def main():
                                 "point goal:(%.2f, %.2f)" % (goals[i][0], goals[i][1])
                             )
                             if frame_count > 0:
+                                if frame_count == 1:
+                                    print(
+                                        f"[VIDEO FIRST FRAME] episode={current_episode_idx} "
+                                        f"goal_local={goals[i].tolist()}",
+                                        flush=True,
+                                    )
                                 cv2.imwrite(f"frame_{algo}_socialnav_{scene_name}.png", cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
                                 fps_writer[i].append_data(vis_image)
                             frame_count += 1
@@ -566,7 +637,7 @@ def main():
                         env.unwrapped,
                         np.full(
                             args_cli.num_envs,
-                            (current_episode_idx + 1) % args_cli.num_episodes,
+                            (current_episode_idx + 1) % episode_end,
                             dtype=np.int64,
                         ),
                     )
@@ -579,7 +650,7 @@ def main():
                         env.unwrapped,
                         np.full(
                             args_cli.num_envs,
-                            (current_episode_idx + 1) % args_cli.num_episodes,
+                            (current_episode_idx + 1) % episode_end,
                             dtype=np.int64,
                         ),
                     )
@@ -622,38 +693,35 @@ def main():
                         current_episode_idx += 1
                         write_metrics(evaluation_metrics, save_dir + "metric.csv")
 
-                        if current_episode_idx >= args_cli.num_episodes:
-                            print(f"\n[INFO] All {args_cli.num_episodes} episodes completed!")
+                        if current_episode_idx >= episode_end:
+                            print(
+                                f"\n[INFO] Episodes {args_cli.episode_start} "
+                                f"through {episode_end - 1} completed!"
+                            )
                             print(f"[INFO] Final metrics saved to {save_dir}metric.csv")
 
-                            print("[INFO] Pre-cleanup camera sensors...")
-                            try:
-                                camera_sensor = env.unwrapped.scene.sensors['camera_sensor']
-                                if hasattr(camera_sensor, '_annotators'):
-                                    for annotator in camera_sensor._annotators:
-                                        try:
-                                            annotator.detach()
-                                        except Exception:
-                                            pass
-                                    camera_sensor._annotators = []
-                            except Exception as e:
-                                print(f"Warning: Camera pre-cleanup failed: {e}")
-
-                            cleanup_simulation(env, simulation_app)
+                            # The finally block performs the complete cleanup
+                            # exactly once.  Calling it here as well used to
+                            # unload AnimationGraph/Replicator twice.
                             return
-
-                        validate_episode_start_pose(
-                            env, scene_path, current_episode_idx
-                        )
 
                         if hasattr(env.env, '_recent_positions'):
                             env.env._recent_positions.clear()
-                        with output_lock:
-                            planning_output.trajectory_points_world = None
-                            planning_output.all_trajectories_world = None
-                            planning_output.all_values_camera = None
-                            planning_output.is_planning = False
-                            planning_output.planning_error = None
+                        # Invalidate the old generation atomically with
+                        # clearing its output.  An in-flight planner can then
+                        # finish, but its result will be discarded.
+                        with input_lock:
+                            planning_input.episode_generation = current_episode_idx
+                            with output_lock:
+                                planning_output.trajectory_points_world = None
+                                planning_output.all_trajectories_world = None
+                                planning_output.all_trajectories_camera = None
+                                planning_output.point_goals_camera = None
+                                planning_output.all_values_camera = None
+                                planning_output.mode_debug = None
+                                planning_output.episode_generation = -1
+                                planning_output.is_planning = False
+                                planning_output.planning_error = None
 
                         new_episode_path = os.path.join(scene_path, f"episode_{current_episode_idx}.json")
                         env.unwrapped.scene.cfg.episode_json_path = new_episode_path
@@ -677,6 +745,25 @@ def main():
                                 wait_count += 1
                                 if wait_count % 50 == 0:
                                     print(f"  Waiting... ({wait_count}/{max_wait})")
+
+                        # People setup advances Kit asynchronously and may
+                        # leave observations from the terminal episode cached.
+                        # Reset only after it has finished, then validate this
+                        # final state before opening the next episode's writer.
+                        set_benchmark_episode_ids(
+                            env.unwrapped,
+                            np.full(
+                                args_cli.num_envs,
+                                current_episode_idx,
+                                dtype=np.int64,
+                            ),
+                        )
+                        obs, infos = env.reset()
+                        validate_episode_start_state(
+                            env, infos, scene_path, current_episode_idx
+                        )
+                        if hasattr(env.env, '_recent_positions'):
+                            env.env._recent_positions.clear()
 
                         euclidean[i] = np.sqrt(np.square(infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]).sum(axis=-1))[i]
                         fps_writer[i] = imageio.get_writer(save_dir + "fps_%d.mp4" % current_episode_idx, fps=10)
@@ -708,7 +795,12 @@ def main():
     finally:
         cleanup_simulation(
             env=env if 'env' in locals() else None,
-            simulation_app=simulation_app if 'simulation_app' in locals() else None
+            simulation_app=simulation_app if 'simulation_app' in locals() else None,
+            stop_event=stop_event,
+            planning_thread_obj=(
+                planning_thread_obj if 'planning_thread_obj' in locals() else None
+            ),
+            fps_writer=fps_writer if 'fps_writer' in locals() else None,
         )
 
 
