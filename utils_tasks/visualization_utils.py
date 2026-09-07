@@ -10,6 +10,14 @@ INTIMATE_SPACE = 0.45    # < 0.45m: 碰撞/亲密空间
 PERSONAL_SPACE = 1.2     # 0.45-1.2m: 个人空间
 SOCIAL_SPACE = 3.6       # 1.2-3.6m: 社交空间
 
+MODE_TRAJECTORY_COLORS = (
+    (50, 120, 255),
+    (0, 220, 255),
+    (60, 255, 80),
+    (255, 80, 50),
+    (230, 80, 255),
+)
+
 # Draw all trajectories with colors based on values
 # Define color mapping function from value to color (blue to red gradient)
 def value_to_color(value, values_min, values_max):
@@ -157,7 +165,7 @@ class VisualizationManager:
         
         return occupancy_grid, min_coords
         
-    def visualize_trajectory(self, rgb_image, depth_image, intrinsic, trajectory_points, robot_pose, camera_roll=0, all_trajectories_points=None, all_trajectories_values=None):
+    def visualize_trajectory(self, rgb_image, depth_image, intrinsic, trajectory_points, robot_pose, camera_roll=0, all_trajectories_points=None, all_trajectories_values=None, all_trajectories_modes=None, selected_trajectory_index=None):
         # Calculate visualization size based on 10m×10m range
         grid_size = int(10.0 / self.resolution)  # 20m in grid cells
         vis_image = np.zeros((grid_size, grid_size, 3), dtype=np.uint8)
@@ -336,7 +344,15 @@ class VisualizationManager:
             vis_image_all[vis_coords_current[:, 0], vis_coords_current[:, 1]] = (0, 0, 255) # Red
         
         # Set default colors if no values provided
-        if all_trajectories_values is None:
+        if all_trajectories_modes is not None:
+            trajectory_colors = [
+                MODE_TRAJECTORY_COLORS[
+                    int(all_trajectories_modes[idx] if idx < len(all_trajectories_modes) else idx)
+                    % len(MODE_TRAJECTORY_COLORS)
+                ]
+                for idx in range(len(all_trajectories_points))
+            ]
+        elif all_trajectories_values is None:
             colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)]
             trajectory_colors = [colors[idx % len(colors)] for idx in range(len(all_trajectories_points))]
         else:
@@ -346,8 +362,14 @@ class VisualizationManager:
             # Generate color for each trajectory
             trajectory_colors = [value_to_color(v, values_min, values_max) for v in all_trajectories_values]
         
-        for idx, traj in enumerate(all_trajectories_points):
-            color = trajectory_colors[idx]
+        draw_order = list(range(len(all_trajectories_points)))
+        if selected_trajectory_index is not None and int(selected_trajectory_index) in draw_order:
+            draw_order.remove(int(selected_trajectory_index))
+            draw_order.append(int(selected_trajectory_index))
+        for idx in draw_order:
+            traj = all_trajectories_points[idx]
+            selected = selected_trajectory_index is not None and idx == int(selected_trajectory_index)
+            color = (255, 255, 0) if selected else trajectory_colors[idx]
             
             # Transform trajectory points
             dx = traj[:, 0] - robot_pose[0]
@@ -370,7 +392,7 @@ class VisualizationManager:
             
             # Draw trajectory with anti-aliased lines
             for i in range(len(vis_points_all) - 1):
-                cv2.line(vis_image_all, tuple(vis_points_all[i]), tuple(vis_points_all[i+1]), color, 1, cv2.LINE_AA)
+                cv2.line(vis_image_all, tuple(vis_points_all[i]), tuple(vis_points_all[i+1]), color, 3 if selected else 1, cv2.LINE_AA)
                 
             # Draw start and end points with anti-aliasing
             if len(vis_points_all) > 0:
@@ -406,6 +428,7 @@ class VisualizationManager:
     def visualize_trajectory_global_with_people(self, rgb_image, depth_image, intrinsic, trajectory_points, 
                                                 robot_pose, goal_position=None, camera_roll=0, 
                                                 all_trajectories_points=None, all_trajectories_values=None,
+                                                all_trajectories_modes=None, selected_trajectory_index=None,
                                                 people_positions=None,people_positions_dict=None):
         """
         带行人可视化的全局轨迹可视化
@@ -550,7 +573,15 @@ class VisualizationManager:
         vis_image_all = self._draw_people_on_local_map(vis_image_all, robot_pose, people_positions,
                                                         grid_size, center_offset)
         
-        if all_trajectories_values is None:
+        if all_trajectories_modes is not None:
+            trajectory_colors = [
+                MODE_TRAJECTORY_COLORS[
+                    int(all_trajectories_modes[idx] if idx < len(all_trajectories_modes) else idx)
+                    % len(MODE_TRAJECTORY_COLORS)
+                ]
+                for idx in range(len(all_trajectories_points))
+            ]
+        elif all_trajectories_values is None:
             colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)]
             trajectory_colors = [colors[idx % len(colors)] for idx in range(len(all_trajectories_points))]
         else:
@@ -558,8 +589,14 @@ class VisualizationManager:
             values_max = np.max(all_trajectories_values)
             trajectory_colors = [value_to_color(v, values_min, values_max) for v in all_trajectories_values]
         
-        for idx, traj in enumerate(all_trajectories_points):
-            color = trajectory_colors[idx]
+        draw_order = list(range(len(all_trajectories_points)))
+        if selected_trajectory_index is not None and int(selected_trajectory_index) in draw_order:
+            draw_order.remove(int(selected_trajectory_index))
+            draw_order.append(int(selected_trajectory_index))
+        for idx in draw_order:
+            traj = all_trajectories_points[idx]
+            selected = selected_trajectory_index is not None and idx == int(selected_trajectory_index)
+            color = (255, 255, 0) if selected else trajectory_colors[idx]
             
             dx = traj[:, 0] - robot_pose[0]
             dy = traj[:, 1] - robot_pose[1]
@@ -575,7 +612,7 @@ class VisualizationManager:
             vis_points_all[:, 1] = -grid_points[:, 0] + center_offset
             
             for i in range(len(vis_points_all) - 1):
-                cv2.line(vis_image_all, tuple(vis_points_all[i]), tuple(vis_points_all[i+1]), color, 1, cv2.LINE_AA)
+                cv2.line(vis_image_all, tuple(vis_points_all[i]), tuple(vis_points_all[i+1]), color, 3 if selected else 1, cv2.LINE_AA)
                 
             if len(vis_points_all) > 0:
                 cv2.circle(vis_image_all, tuple(vis_points_all[0]), 2, color, -1, cv2.LINE_AA)

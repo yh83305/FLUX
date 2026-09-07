@@ -20,6 +20,12 @@ import io
 import json
 import time
 
+def navigator_health(port=8888):
+    """Return server build and checkpoint metadata for reproducible runs."""
+    response = requests.get("http://localhost:%d/health" % port, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
 def navigator_reset(intrinsic=None, stop_threshold=-0.5, batch_size=1, port=8888, env_id=None):
     """
     重置导航 Agent
@@ -77,9 +83,11 @@ def nogoal_step(rgb_images,depth_images,port=8888):
         'rgb_time':time.time(),
     }
     response = requests.post(url, files=files, data=data)
-    trajectory = json.loads(response.text)['trajectory']
-    all_trajectory = json.loads(response.text)['all_trajectory']
-    all_value = json.loads(response.text)['all_values']
+    response.raise_for_status()
+    payload = response.json()
+    trajectory = payload['trajectory']
+    all_trajectory = payload['all_trajectory']
+    all_value = payload['all_values']
     return np.array(trajectory),np.array(all_trajectory),np.array(all_value)
 
 def pointgoal_step(point_goals, rgb_images, depth_images, port=8888, return_debug=False):
@@ -136,6 +144,7 @@ def pointgoal_step(point_goals, rgb_images, depth_images, port=8888, return_debu
     
     # ===== 步骤5：发送请求并解析响应 =====
     response = requests.post(url, files=files, data=data)
+    response.raise_for_status()
     payload = response.json()
     result = (np.asarray(payload['trajectory']), np.asarray(payload['all_trajectory']),
               np.asarray(payload['all_values']))
@@ -182,6 +191,4 @@ def imagegoal_step(image_goals,rgb_images,depth_images,port=8888):
         payload = json.loads(response.text)
         result += (payload,)
     return result
-
-
 

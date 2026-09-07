@@ -1,6 +1,6 @@
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.scene import InteractiveSceneCfg, DynamicSceneCfg
+from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.assets import ArticulationCfg,AssetBaseCfg
 from isaaclab.sensors import ContactSensorCfg, CameraCfg, RayCasterCfg
 from dataclasses import MISSING
@@ -75,7 +75,7 @@ class HumanoidExplorationSceneCfg(ExplorationSceneCfg):
     height_sensor: RayCasterCfg = MISSING
     
 @configclass
-class SocialNavSceneCfg(DynamicSceneCfg):
+class SocialNavSceneCfg(InteractiveSceneCfg):
     """Scene configuration for social navigation with dynamic pedestrians.
     
     This scene includes:
@@ -92,14 +92,8 @@ class SocialNavSceneCfg(DynamicSceneCfg):
     camera_sensor: CameraCfg = MISSING
     goal: AssetBaseCfg = MISSING
     
-    def __post_init__(self):
-        """Post initialization to set default values for people simulation."""
-        # Enable people simulation by default for social nav
-        if not hasattr(self, 'people_simulation'):
-            self.people_simulation = True
-    
 @configclass
-class DynPointGoalSceneCfg(DynamicSceneCfg):
+class DynPointGoalSceneCfg(InteractiveSceneCfg):
     """动态点导航场景 - 目标是单个移动行人
     
     This scene includes:
@@ -117,14 +111,8 @@ class DynPointGoalSceneCfg(DynamicSceneCfg):
     camera_sensor: CameraCfg = MISSING
     goal: AssetBaseCfg = MISSING
 
-    def __post_init__(self):
-        """Post initialization to set default values for people simulation."""
-        if not hasattr(self, 'people_simulation'):
-            self.people_simulation = True
-        self.enable_dynamic_target = True
-
 @configclass
-class DynExploreSceneCfg(DynamicSceneCfg):
+class DynExploreSceneCfg(InteractiveSceneCfg):
     """动态探索场景 - 在有人环境下自由探索
     
     This scene includes:
@@ -140,13 +128,6 @@ class DynExploreSceneCfg(DynamicSceneCfg):
     contact_sensor: ContactSensorCfg = MISSING
     camera_sensor: CameraCfg = MISSING
     metric_sensor: CameraCfg = MISSING  # For occupancy mapping
-
-    def __post_init__(self):
-        """Post initialization to set default values for people simulation."""
-        if not hasattr(self, 'people_simulation'):
-            self.people_simulation = True
-        # self.enable_exploration = True  # ← 启用探索模式
-
 
     
 

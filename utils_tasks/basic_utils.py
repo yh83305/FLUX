@@ -4,7 +4,10 @@ import numpy as np
 import csv
 import cv2
 import torch
-import open3d as o3d
+try:
+    import open3d as o3d
+except ImportError:
+    o3d = None
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
@@ -20,8 +23,11 @@ class PlanningInput:
 class PlanningOutput:
     trajectory_points_world: Optional[np.ndarray] = None
     all_trajectories_world: Optional[List[np.ndarray]] = None
+    all_trajectories_camera: Optional[np.ndarray] = None
+    point_goals_camera: Optional[np.ndarray] = None
     all_values_camera: Optional[np.ndarray] = None
     sub_pointgoal_pd: Optional[np.ndarray] = None
+    mode_debug: Optional[List[dict]] = None
     is_planning: bool = False
     planning_error: Optional[str] = None
 
@@ -55,6 +61,8 @@ def draw_box_with_text(image, x, y, width, height, text,
     return image
 
 def cpu_pointcloud_from_array(points,colors):
+    if o3d is None:
+        raise ImportError("cpu_pointcloud_from_array requires open3d")
     pointcloud = o3d.geometry.PointCloud()
     pointcloud.points = o3d.utility.Vector3dVector(points)
     pointcloud.colors = o3d.utility.Vector3dVector(colors)
