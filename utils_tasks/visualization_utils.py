@@ -23,19 +23,21 @@ MODE_TRAJECTORY_COLORS = (
 def value_to_color(value, values_min, values_max):
     if not np.isfinite(value):
         return (128, 128, 128)
-    # Normalize value to [0, 1] based on a fixed range [-2, 0.5]
-    fixed_min = -1.2
-    fixed_max = 0.2
-    value = np.clip(value, fixed_min, fixed_max)
-    normalized = (value - fixed_min) / (fixed_max - fixed_min)
-    # 低分(危险)=红, 中=黄, 高分(安全)=绿
+    # Normalize within the candidates from this frame. Goal-related offsets
+    # shared by every candidate must not saturate the whole plot to one color.
+    spread = float(values_max) - float(values_min)
+    normalized = 0.5 if spread <= 1e-8 else float(np.clip(
+        (float(value) - float(values_min)) / spread, 0.0, 1.0
+    ))
+    # RGB: low=blue, middle=green, high=red. Yellow remains reserved for the
+    # selected trajectory in explicit-mode visualizations.
     if normalized < 0.5:
-        b = 255
-        g = int(255 * 2 * normalized)
-        r = 0
+        b = 0
+        g = int(510 * normalized)
+        r = int(255 * (1 - 2 * normalized))
     else:
-        b = int(255 * (2 - 2 * normalized))
-        g = 255
+        b = int(510 * (normalized - 0.5))
+        g = int(510 * (1 - normalized))
         r = 0
     return (b, g, r)  # BGR
 
@@ -344,7 +346,11 @@ class VisualizationManager:
             vis_image_all[vis_coords_current[:, 0], vis_coords_current[:, 1]] = (0, 0, 255) # Red
         
         # Set default colors if no values provided
-        if all_trajectories_modes is not None:
+        if all_trajectories_values is not None:
+            values_min = np.nanmin(all_trajectories_values)
+            values_max = np.nanmax(all_trajectories_values)
+            trajectory_colors = [value_to_color(v, values_min, values_max) for v in all_trajectories_values]
+        elif all_trajectories_modes is not None:
             trajectory_colors = [
                 MODE_TRAJECTORY_COLORS[
                     int(all_trajectories_modes[idx] if idx < len(all_trajectories_modes) else idx)
@@ -355,12 +361,6 @@ class VisualizationManager:
         elif all_trajectories_values is None:
             colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)]
             trajectory_colors = [colors[idx % len(colors)] for idx in range(len(all_trajectories_points))]
-        else:
-            # Get min and max values for normalization
-            values_min = np.min(all_trajectories_values)
-            values_max = np.max(all_trajectories_values)
-            # Generate color for each trajectory
-            trajectory_colors = [value_to_color(v, values_min, values_max) for v in all_trajectories_values]
         
         draw_order = list(range(len(all_trajectories_points)))
         if selected_trajectory_index is not None and int(selected_trajectory_index) in draw_order:
@@ -573,7 +573,11 @@ class VisualizationManager:
         vis_image_all = self._draw_people_on_local_map(vis_image_all, robot_pose, people_positions,
                                                         grid_size, center_offset)
         
-        if all_trajectories_modes is not None:
+        if all_trajectories_values is not None:
+            values_min = np.nanmin(all_trajectories_values)
+            values_max = np.nanmax(all_trajectories_values)
+            trajectory_colors = [value_to_color(v, values_min, values_max) for v in all_trajectories_values]
+        elif all_trajectories_modes is not None:
             trajectory_colors = [
                 MODE_TRAJECTORY_COLORS[
                     int(all_trajectories_modes[idx] if idx < len(all_trajectories_modes) else idx)
@@ -584,10 +588,6 @@ class VisualizationManager:
         elif all_trajectories_values is None:
             colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)]
             trajectory_colors = [colors[idx % len(colors)] for idx in range(len(all_trajectories_points))]
-        else:
-            values_min = np.min(all_trajectories_values)
-            values_max = np.max(all_trajectories_values)
-            trajectory_colors = [value_to_color(v, values_min, values_max) for v in all_trajectories_values]
         
         draw_order = list(range(len(all_trajectories_points)))
         if selected_trajectory_index is not None and int(selected_trajectory_index) in draw_order:

@@ -157,7 +157,7 @@ def draw_mode_debug_panel(image, debug):
     return np.concatenate((image, panel), axis=1)
 
 
-def draw_esdf_candidates(size, trajectories, goal, debug):
+def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None):
     """Render ESDF, all candidates and the selected solution in camera coordinates."""
     canvas = np.zeros((size, size, 3), dtype=np.uint8)
     meta = debug.get("esdf_debug", {}) if isinstance(debug, dict) else {}
@@ -172,7 +172,26 @@ def draw_esdf_candidates(size, trajectories, goal, debug):
     sx, sy = size / esdf.shape[1], size / esdf.shape[0]
     rows = debug.get("candidate_debug", [])
     selected = int(debug.get("selected_index", -1))
-    colors = ((50, 120, 255), (0, 220, 255), (60, 255, 80), (255, 80, 50), (230, 80, 255))
+    values = np.asarray(
+        candidate_values if candidate_values is not None else
+        [row.get("final_score", np.nan) for row in rows],
+        dtype=np.float32,
+    ).reshape(-1)
+    finite_values = values[np.isfinite(values)]
+    values_min = float(finite_values.min()) if finite_values.size else 0.0
+    values_max = float(finite_values.max()) if finite_values.size else 0.0
+
+    def relative_score_color(index):
+        if index >= len(values) or not np.isfinite(values[index]):
+            return (128, 128, 128)
+        spread = values_max - values_min
+        relative = 0.5 if spread <= 1e-8 else float(np.clip(
+            (values[index] - values_min) / spread, 0.0, 1.0
+        ))
+        # RGB: low=blue, middle=green, high=red; selected stays yellow.
+        if relative < 0.5:
+            return (0, int(510 * relative), int(255 * (1.0 - 2.0 * relative)))
+        return (int(510 * (relative - 0.5)), int(510 * (1.0 - relative)), 0)
     for index, trajectory in enumerate(np.asarray(trajectories)):
         px = (-(trajectory[:, 1]) - float(origin_r)) / voxel * sx
         py = (esdf.shape[0] - 1 - (trajectory[:, 0] - float(origin_f)) / voxel) * sy
@@ -183,7 +202,7 @@ def draw_esdf_candidates(size, trajectories, goal, debug):
         if len(points) < 2:
             continue
         mode = int(rows[index].get("mode", -1)) if index < len(rows) else -1
-        color = (255, 255, 0) if index == selected else colors[mode % len(colors)]
+        color = (255, 255, 0) if index == selected else relative_score_color(index)
         cv2.polylines(canvas, [points], False, color, 5 if index == selected else 2, cv2.LINE_AA)
         cv2.putText(canvas, f"m{mode}", tuple(points[-1]), cv2.FONT_HERSHEY_SIMPLEX,
                     .42, color, 1, cv2.LINE_AA)
@@ -193,7 +212,7 @@ def draw_esdf_candidates(size, trajectories, goal, debug):
         gy = int(round((esdf.shape[0] - 1 - (goal[0] - float(origin_f)) / voxel) * sy))
         cv2.drawMarker(canvas, (int(np.clip(gx, 8, size-8)), int(np.clip(gy, 8, size-8))),
                        (255, 255, 255), cv2.MARKER_CROSS, 18, 2, cv2.LINE_AA)
-    cv2.putText(canvas, "ESDF + candidates (yellow=selected)", (10, 24),
+    cv2.putText(canvas, "relative score: blue=low green=mid red=high yellow=selected", (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, .48, (255, 255, 255), 1, cv2.LINE_AA)
     return canvas
 
@@ -606,7 +625,8 @@ def main():
                         if use_mode_debug:
                             esdf_view = draw_esdf_candidates(
                                 vis_image.shape[0], current_all_trajectories_camera[i],
-                                current_point_goals_camera[i], current_mode_debug[i])
+                                current_point_goals_camera[i], current_mode_debug[i],
+                                current_all_values[i])
                             # The SocialNav renderer may add vertical status space, so image
                             # height is not a valid camera/map split. Preserve the complete
                             # first-person pane using the source RGB width, then append ESDF.
