@@ -678,7 +678,6 @@ def main():
                             images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
                             current_trajectory[i],
                             robot_pose=x0[i],
-                            goal_position=goal_world[:2],
                             all_trajectories_points=current_all_trajectories[i],
                             all_trajectories_values=current_all_values[i]
                         )
