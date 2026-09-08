@@ -664,24 +664,26 @@ def main():
 
                         if pos_get_flag:
                             social_metrics_trackers[i].update(camera_pos[i], people_positions, env.unwrapped.step_dt)
-                            # Disabled for performance; keep implementation above available.
-                            # vis_image = vis_manager[i].visualize_trajectory_global_with_people(
-                            #     images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
-                            #     current_trajectory[i], robot_pose=x0[i], goal_position=goal_world[:2],
-                            #     all_trajectories_points=current_all_trajectories[i],
-                            #     all_trajectories_values=current_all_values[i],
-                            #     people_positions=people_positions,
-                            #     people_positions_dict=people_char_paths,
-                            # )
 
-                        vis_image = vis_manager[i].visualize_trajectory_global(
-                            images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
-                            current_trajectory[i],
-                            robot_pose=x0[i],
-                            goal_position=goal_world[:2],
-                            all_trajectories_points=current_all_trajectories[i],
-                            all_trajectories_values=current_all_values[i]
-                        )
+                            vis_image = vis_manager[i].visualize_trajectory_global_with_people(
+                                images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
+                                current_trajectory[i],
+                                robot_pose=x0[i],
+                                goal_position=goal_world[:2],
+                                all_trajectories_points=current_all_trajectories[i],
+                                all_trajectories_values=current_all_values[i],
+                                people_positions=people_positions,
+                                people_positions_dict=people_char_paths,
+                            )
+                        else:
+                            vis_image = vis_manager[i].visualize_trajectory_global(
+                                images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
+                                current_trajectory[i],
+                                robot_pose=x0[i],
+                                goal_position=goal_world[:2],
+                                all_trajectories_points=current_all_trajectories[i],
+                                all_trajectories_values=current_all_values[i]
+                            )
 
                         use_mode_debug = (algo in MODE_DEBUG_ALGOS and current_mode_debug
                                           and i < len(current_mode_debug))
