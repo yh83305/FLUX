@@ -91,7 +91,7 @@ from wheeled_robots.controllers.differential_controller import DifferentialContr
 import time
 import threading
 
-from utils_tasks.basic_utils import PlanningInput, PlanningOutput, find_usd_path, write_metrics, draw_box_with_text, adjust_usd_scale
+from utils_tasks.basic_utils import PlanningInput, PlanningOutput, find_usd_path, write_metrics, draw_box_with_text, adjust_usd_scale, pad_video_frame
 from configs.robots import *
 from configs.scenes import *
 from configs.tasks import *
@@ -131,12 +131,12 @@ def _number(value, signed=False):
 def draw_mode_debug_panel(image, debug):
     """Append the explicit-mode candidate selection table."""
     rows = debug.get("candidate_debug", []) if isinstance(debug, dict) else []
-    panel = np.full((image.shape[0], 620, 3), (18, 22, 28), dtype=np.uint8)
+    panel = np.full((image.shape[0], 520, 3), (18, 22, 28), dtype=np.uint8)
     cv2.putText(panel, f"MODE SELECT: {debug.get('selection_reason', 'unknown')}",
                 (12, 24), cv2.FONT_HERSHEY_SIMPLEX, .58, (255, 255, 255), 1, cv2.LINE_AA)
-    columns = ((8, "idx"), (45, "mode"), (92, "P"), (132, "safe"),
-               (174, "ent"), (213, "goal"), (281, "esdf"), (351, "unk"),
-               (395, "temp"), (458, "final"), (530, "filter"))
+    columns = ((8, "idx"), (42, "mode"), (80, "P"), (115, "safe"),
+               (153, "ent"), (188, "goal"), (245, "esdf"), (300, "unk"),
+               (340, "temp"), (395, "final"), (450, "filter"))
     for x, label in columns:
         cv2.putText(panel, label, (x, 52), cv2.FONT_HERSHEY_SIMPLEX,
                     .38, (190, 200, 210), 1, cv2.LINE_AA)
@@ -144,15 +144,15 @@ def draw_mode_debug_panel(image, debug):
         selected, safe = bool(row.get("selected")), bool(row.get("safe"))
         color = (20, 220, 255) if selected else ((80, 220, 100) if safe else (100, 110, 125))
         y = 78 + line * 24
-        values = ((8, f"{row.get('index', -1):02d}"), (45, f"m{row.get('mode', -1)}"),
-                  (92, _number(row.get("prior"))), (132, "Y" if safe else "N"),
-                  (174, "Y" if row.get("entered_selection") else "N"),
-                  (213, _number(row.get("goal_score"), True)),
-                  (281, _number(row.get("minimum_esdf_clearance_m"), True)),
-                  (351, _number(row.get("unknown_fraction"))),
-                  (395, _number(row.get("temporal_cost"))),
-                  (458, _number(row.get("final_score"), True)),
-                  (530, str(row.get("filtered_reason") or ("SELECTED" if selected else "-"))))
+        values = ((8, f"{row.get('index', -1):02d}"), (42, f"m{row.get('mode', -1)}"),
+                  (80, _number(row.get("prior"))), (115, "Y" if safe else "N"),
+                  (153, "Y" if row.get("entered_selection") else "N"),
+                  (188, _number(row.get("goal_score"), True)),
+                  (245, _number(row.get("minimum_esdf_clearance_m"), True)),
+                  (300, _number(row.get("unknown_fraction"))),
+                  (340, _number(row.get("temporal_cost"))),
+                  (395, _number(row.get("final_score"), True)),
+                  (450, str(row.get("filtered_reason") or ("SEL" if selected else "-"))))
         for x, value in values:
             cv2.putText(panel, value, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
                         .36, color, 1, cv2.LINE_AA)
@@ -418,6 +418,7 @@ def planning_thread(env, camera_intrinsic):
                         planning_output.all_values_camera = all_values_camera
                         planning_output.mode_debug = mode_debug
                         planning_output.episode_generation = episode_generation
+                        planning_output.plan_revision += 1
                         planning_output.planning_error = None
                     planning_output.is_planning = False
 
@@ -603,6 +604,9 @@ def main():
     if hasattr(env.env, '_recent_positions'):
         env.env._recent_positions.clear()
     frame_count = 0
+    cached_mode_revision = [-1] * args_cli.num_envs
+    cached_esdf_views = [None] * args_cli.num_envs
+    cached_debug_panels = [None] * args_cli.num_envs
 
     try:
         while simulation_app.is_running():
@@ -638,6 +642,7 @@ def main():
                 current_all_trajectories_camera = None
                 current_point_goals_camera = None
                 current_mode_debug = None
+                current_plan_revision = -1
                 with output_lock:
                     if (
                         planning_output.trajectory_points_world is not None
@@ -649,6 +654,7 @@ def main():
                         current_all_trajectories_camera = planning_output.all_trajectories_camera.copy()
                         current_point_goals_camera = planning_output.point_goals_camera.copy()
                         current_mode_debug = planning_output.mode_debug
+                        current_plan_revision = planning_output.plan_revision
 
                 if current_trajectory is not None:
                     goal_world = camera_pos[0] + camera_rot[0] @ np.array([goals[0][0], goals[0][1], 0.0])
@@ -682,15 +688,33 @@ def main():
                         use_mode_debug = (algo in MODE_DEBUG_ALGOS and current_mode_debug
                                           and i < len(current_mode_debug))
                         if use_mode_debug:
-                            esdf_view = draw_esdf_candidates(
-                                vis_image.shape[0], current_all_trajectories_camera[i],
-                                current_point_goals_camera[i], current_mode_debug[i],
-                                current_all_values[i])
+                            if cached_mode_revision[i] != current_plan_revision:
+                                esdf_square = draw_esdf_candidates(
+                                    640, current_all_trajectories_camera[i],
+                                    current_point_goals_camera[i], current_mode_debug[i],
+                                    current_all_values[i])
+                                pad_top = max(0, (vis_image.shape[0] - 640) // 2)
+                                pad_bottom = max(
+                                    0, vis_image.shape[0] - 640 - pad_top
+                                )
+                                cached_esdf_views[i] = np.pad(
+                                    esdf_square,
+                                    ((pad_top, pad_bottom), (0, 0), (0, 0)),
+                                    mode="constant",
+                                )
+                                cached_debug_panels[i] = draw_mode_debug_panel(
+                                    np.empty((vis_image.shape[0], 0, 3), dtype=np.uint8),
+                                    current_mode_debug[i],
+                                )
+                                cached_mode_revision[i] = current_plan_revision
                             # Keep the complete native SocialNav visualization.  Its
                             # lower-left global map is wider than the RGB camera pane;
                             # cropping to camera width hid the map beneath the ESDF.
-                            vis_image = np.concatenate((vis_image, esdf_view), axis=1)
-                            vis_image = draw_mode_debug_panel(vis_image, current_mode_debug[i])
+                            vis_image = np.concatenate((
+                                vis_image,
+                                cached_esdf_views[i],
+                                cached_debug_panels[i],
+                            ), axis=1)
 
                         if mpc is None:
                             continue
@@ -720,8 +744,16 @@ def main():
                                         f"goal_local={goals[i].tolist()}",
                                         flush=True,
                                     )
-                                cv2.imwrite(f"frame_{algo}_socialnav_{scene_name}.png", cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
-                                fps_writer[i].append_data(vis_image)
+                                    cv2.imwrite(
+                                        os.path.join(
+                                            save_dir,
+                                            f"first_frame_{current_episode_idx}.png",
+                                        ),
+                                        cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR),
+                                    )
+                                fps_writer[i].append_data(
+                                    pad_video_frame(vis_image)
+                                )
                             frame_count += 1
                         except Exception:
                             pass
@@ -890,6 +922,9 @@ def main():
                         ])
                         vis_manager[i].reset(initial_robot_pose=initial_pose)
                         frame_count = 0
+                        cached_mode_revision[i] = -1
+                        cached_esdf_views[i] = None
+                        cached_debug_panels[i] = None
                         episode_steps[i] = 0
                         social_metrics_trackers[i].reset()
 

@@ -30,6 +30,22 @@ class PlanningOutput:
     mode_debug: Optional[List[dict]] = None
     is_planning: bool = False
     planning_error: Optional[str] = None
+    episode_generation: int = -1
+    plan_revision: int = 0
+
+
+def pad_video_frame(image: np.ndarray, macro_block_size: int = 16) -> np.ndarray:
+    """Pad RGB frames without rescaling so ffmpeg receives codec-safe shapes."""
+    height, width = image.shape[:2]
+    pad_height = (-height) % macro_block_size
+    pad_width = (-width) % macro_block_size
+    if not pad_height and not pad_width:
+        return image
+    return np.pad(
+        image,
+        ((0, pad_height), (0, pad_width), (0, 0)),
+        mode="constant",
+    )
 
 def find_usd_path(dir,task='pointgoal'):
     paths = os.listdir(dir)
