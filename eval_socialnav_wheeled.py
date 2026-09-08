@@ -686,12 +686,10 @@ def main():
                                 vis_image.shape[0], current_all_trajectories_camera[i],
                                 current_point_goals_camera[i], current_mode_debug[i],
                                 current_all_values[i])
-                            # The SocialNav renderer may add vertical status space, so image
-                            # height is not a valid camera/map split. Preserve the complete
-                            # first-person pane using the source RGB width, then append ESDF.
-                            camera_width = min(images[i].shape[1], vis_image.shape[1])
-                            first_person = vis_image[:, :camera_width].copy()
-                            vis_image = np.concatenate((first_person, esdf_view), axis=1)
+                            # Keep the complete native SocialNav visualization.  Its
+                            # lower-left global map is wider than the RGB camera pane;
+                            # cropping to camera width hid the map beneath the ESDF.
+                            vis_image = np.concatenate((vis_image, esdf_view), axis=1)
                             vis_image = draw_mode_debug_panel(vis_image, current_mode_debug[i])
 
                         if mpc is None:
