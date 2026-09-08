@@ -132,27 +132,24 @@ def draw_mode_debug_panel(image, debug):
     """Append the explicit-mode candidate selection table."""
     rows = debug.get("candidate_debug", []) if isinstance(debug, dict) else []
     panel = np.full((image.shape[0], 520, 3), (18, 22, 28), dtype=np.uint8)
-    cv2.putText(panel, f"MODE SELECT: {debug.get('selection_reason', 'unknown')}",
+    cv2.putText(panel, "MODE SELECT: unified score + argmax",
                 (12, 24), cv2.FONT_HERSHEY_SIMPLEX, .58, (255, 255, 255), 1, cv2.LINE_AA)
-    columns = ((8, "idx"), (42, "mode"), (80, "P"), (115, "safe"),
-               (153, "ent"), (188, "goal"), (245, "esdf"), (300, "unk"),
-               (340, "temp"), (395, "final"), (450, "filter"))
+    columns = ((8, "idx"), (42, "mode"), (80, "P"), (115, "goal"),
+               (188, "esdf"), (245, "unk"), (320, "final"), (405, "state"))
     for x, label in columns:
         cv2.putText(panel, label, (x, 52), cv2.FONT_HERSHEY_SIMPLEX,
                     .38, (190, 200, 210), 1, cv2.LINE_AA)
     for line, row in enumerate(rows):
-        selected, safe = bool(row.get("selected")), bool(row.get("safe"))
-        color = (20, 220, 255) if selected else ((80, 220, 100) if safe else (100, 110, 125))
+        selected = bool(row.get("selected"))
+        color = (20, 220, 255) if selected else (220, 220, 220)
         y = 78 + line * 24
         values = ((8, f"{row.get('index', -1):02d}"), (42, f"m{row.get('mode', -1)}"),
-                  (80, _number(row.get("prior"))), (115, "Y" if safe else "N"),
-                  (153, "Y" if row.get("entered_selection") else "N"),
-                  (188, _number(row.get("goal_score"), True)),
-                  (245, _number(row.get("minimum_esdf_clearance_m"), True)),
-                  (300, _number(row.get("unknown_fraction"))),
-                  (340, _number(row.get("temporal_cost"))),
-                  (395, _number(row.get("final_score"), True)),
-                  (450, str(row.get("filtered_reason") or ("SEL" if selected else "-"))))
+                  (80, _number(row.get("prior"))),
+                  (115, _number(row.get("goal_score"), True)),
+                  (188, _number(row.get("minimum_esdf_clearance_m"), True)),
+                  (245, _number(row.get("unknown_fraction"))),
+                  (320, _number(row.get("final_score"), True)),
+                  (405, "SELECTED" if selected else "SCORED"))
         for x, value in values:
             cv2.putText(panel, value, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
                         .36, color, 1, cv2.LINE_AA)
@@ -189,15 +186,10 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
         [row.get("final_score", np.nan) for row in rows],
         dtype=np.float32,
     ).reshape(-1)
-    safe_mask = np.asarray(
-        [bool(row.get("safe", False)) for row in rows], dtype=bool
-    )
-    if len(safe_mask) != len(values):
-        safe_mask = np.zeros(len(values), dtype=bool)
-    valid_scores = safe_mask & np.isfinite(values) & (values > -1.0e5)
-    safe_values = values[valid_scores]
-    values_min = float(safe_values.min()) if safe_values.size else 0.0
-    values_max = float(safe_values.max()) if safe_values.size else 0.0
+    valid_scores = np.isfinite(values)
+    finite_values = values[valid_scores]
+    values_min = float(finite_values.min()) if finite_values.size else 0.0
+    values_max = float(finite_values.max()) if finite_values.size else 0.0
 
     def relative_score_color(index):
         if index >= len(values) or not valid_scores[index]:
@@ -228,8 +220,7 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
             continue
         mode = int(rows[index].get("mode", -1)) if index < len(rows) else -1
         unknown = float(rows[index].get("unknown_fraction", 0.0)) if index < len(rows) else 0.0
-        selected_safe = index == selected and index < len(valid_scores) and valid_scores[index]
-        color = (255, 255, 0) if selected_safe else relative_score_color(index)
+        color = (255, 255, 0) if index == selected else relative_score_color(index)
         cv2.polylines(canvas, [points], False, color, 5 if index == selected else 2, cv2.LINE_AA)
         cv2.putText(canvas, f"m{mode} u={unknown:.2f}", tuple(points[-1]), cv2.FONT_HERSHEY_SIMPLEX,
                     .42, color, 1, cv2.LINE_AA)
@@ -255,7 +246,7 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
     cv2.rectangle(canvas, (bar_x0, bar_y0), (bar_x1, bar_y1),
                   (255, 255, 255), 1)
     for distance, label in ((display_minimum, f"{display_minimum:+.2f}m"), (0.0, "0"),
-                            (safety_margin, f"safe {safety_margin:.2f}"),
+                            (safety_margin, f"margin {safety_margin:.2f}"),
                             (display_maximum, f"cap {display_maximum:.2f}m")):
         fraction = np.clip(
             (distance - display_minimum) /
