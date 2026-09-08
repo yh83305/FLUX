@@ -674,7 +674,7 @@ def main():
                             #     people_positions_dict=people_char_paths,
                             # )
 
-                        vis_image = vis_manager[i].visualize_trajectory_global(
+                        vis_image = vis_manager[i].visualize_trajectory(
                             images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
                             current_trajectory[i],
                             robot_pose=x0[i],
