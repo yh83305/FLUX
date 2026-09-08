@@ -44,6 +44,7 @@ done
 import csv
 import pathlib
 import sys
+from socialnav_metrics import write_socialnav_summary
 
 root = pathlib.Path(sys.argv[1])
 rows = []
@@ -61,4 +62,6 @@ with (root / "metric.csv").open("w", newline="") as stream:
     writer.writeheader()
     writer.writerows(rows)
 print(f"[BATCH] merged {len(rows)} episodes into {root / 'metric.csv'}")
+summary = write_socialnav_summary(rows, root)
+print(f"[BATCH] final summary: {summary}")
 PY

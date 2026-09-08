@@ -99,7 +99,9 @@ from utils_tasks.client_utils import navigator_reset, pointgoal_step
 from utils_tasks.visualization_utils import VisualizationManager
 from utils_tasks.tracking_utils import MPC_Controller
 from utils_tasks.sim_utils import cleanup_simulation, register_signal_handlers, setup_all_lighting
-from socialnav_metrics import SocialMetricsTracker, get_people_positions
+from socialnav_metrics import (
+    SocialMetricsTracker, get_people_positions, write_socialnav_summary,
+)
 
 planning_input = PlanningInput()
 planning_output = PlanningOutput()
@@ -774,6 +776,9 @@ def main():
                             'avg_distance': social_metrics['avg_distance'],
                             'psi_count': social_metrics['psi_count'],
                             'psi_time': social_metrics['psi_time'],
+                            'total_time': social_metrics['total_time'],
+                            'PSC': social_metrics['PSC'],
+                            'SC': social_metrics['SC'],
                         })
 
                         print(f"\n=== Metrics of Episode {current_episode_idx} in Scene {scene_name} ===")
@@ -793,6 +798,17 @@ def main():
                                 f"through {episode_end - 1} completed!"
                             )
                             print(f"[INFO] Final metrics saved to {save_dir}metric.csv")
+                            summary = write_socialnav_summary(
+                                evaluation_metrics, save_dir
+                            )
+                            print(
+                                "[INFO] Final summary: "
+                                f"success={summary['success_rate']:.3f} "
+                                f"spl={summary['mean_spl']:.3f} "
+                                f"collision={summary['collision_rate']:.3f} "
+                                f"psi_time={summary['psi_time_s_total']:.3f}s",
+                                flush=True,
+                            )
 
                             # The finally block performs the complete cleanup
                             # exactly once.  Calling it here as well used to

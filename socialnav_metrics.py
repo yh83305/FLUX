@@ -1,8 +1,16 @@
+from __future__ import annotations
+
 from typing import List
+import csv
+import json
+from pathlib import Path
 import numpy as np
 import cv2
 import time
-from omni.anim.people.scripts.global_character_position_manager import GlobalCharacterPositionManager
+try:
+    from omni.anim.people.scripts.global_character_position_manager import GlobalCharacterPositionManager
+except ImportError:
+    GlobalCharacterPositionManager = None
 
 # ===== Social Distance Thresholds (Hall's Proxemics) =====
 INTIMATE_SPACE = 0.45    # < 0.45m: 碰撞/亲密空间
@@ -22,6 +30,8 @@ def get_people_positions(env):
         char_paths: List[str] - 对应的角色路径（作为稳定ID）
         has_people: bool - 是否检测到行人
     """
+    if GlobalCharacterPositionManager is None:
+        raise RuntimeError("Isaac Sim people extension is not available")
     positions = []
     char_paths = []
     
@@ -121,3 +131,78 @@ class SocialMetricsTracker:
             'PSC': round(self.psc_invasion_time / total_time_valid, 4),  # 0.5m阈值的占比
             'SC': round(self.sc_invasion_time / total_time_valid, 4)     # 通用SC阈值的占比
         }
+
+
+def summarize_socialnav_metrics(rows: List[dict]) -> dict:
+    """Aggregate final SocialNav metrics from aligned per-episode rows."""
+    if not rows:
+        raise ValueError("cannot summarize an empty SocialNav run")
+
+    def values(key):
+        result = []
+        for row in rows:
+            try:
+                value = float(row[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if np.isfinite(value):
+                result.append(value)
+        return np.asarray(result, dtype=np.float64)
+
+    def mean(key):
+        data = values(key)
+        return float(data.mean()) if len(data) else None
+
+    def total(key):
+        data = values(key)
+        return float(data.sum()) if len(data) else None
+
+    success = values("success")
+    successful_rows = [
+        row for row in rows if float(row.get("success", 0.0)) > 0.5
+    ]
+    successful_times = np.asarray([
+        float(row["time_to_goal"]) for row in successful_rows
+        if np.isfinite(float(row["time_to_goal"]))
+    ], dtype=np.float64)
+    return {
+        "schema": "flux_socialnav_summary_v1",
+        "episodes": int(len(rows)),
+        "success_count": int(np.count_nonzero(success > 0.5)),
+        "success_rate": mean("success"),
+        "mean_spl": mean("spl"),
+        "mean_time_s_all": mean("time_to_goal"),
+        "mean_time_s_success": (
+            float(successful_times.mean()) if len(successful_times) else None
+        ),
+        "mean_initial_distance_m": mean("distance"),
+        "mean_trajectory_length_m": mean("trajectory_length"),
+        "collision_episode_count": int(round(total("collision") or 0.0)),
+        "collision_rate": mean("collision"),
+        "collision_event_count": int(round(total("collision_count") or 0.0)),
+        "mean_collision_events": mean("collision_count"),
+        "mean_min_pedestrian_distance_m": mean("min_distance"),
+        "mean_nearest_pedestrian_distance_m": mean("avg_distance"),
+        "psi_event_count": int(round(total("psi_count") or 0.0)),
+        "mean_psi_events": mean("psi_count"),
+        "psi_time_s_total": total("psi_time"),
+        "mean_psi_time_s": mean("psi_time"),
+        "mean_total_time_s": mean("total_time"),
+        "mean_psc_fraction": mean("PSC"),
+        "mean_sc_fraction": mean("SC"),
+    }
+
+
+def write_socialnav_summary(rows: List[dict], output_dir: str | Path) -> dict:
+    """Write aggregate JSON and a simple metric/value CSV."""
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    summary = summarize_socialnav_metrics(rows)
+    (output / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    with (output / "summary.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("metric", "value"))
+        writer.writerows(summary.items())
+    return summary
