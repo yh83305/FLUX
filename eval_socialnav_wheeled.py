@@ -33,8 +33,6 @@ import os
 import sys
 import json
 import copy
-import pickle
-import glob
 import gc
 
 print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
@@ -261,33 +259,16 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
     return canvas
 
 
-def save_synchronized_plan_record(save_dir, episode_id, revision, record):
-    """Persist one atomic planning snapshot for post-run visualization."""
-    record_dir = os.path.join(save_dir, f"synchronized_episode_{episode_id}")
-    os.makedirs(record_dir, exist_ok=True)
-    output_path = os.path.join(record_dir, f"plan_{int(revision):06d}.pkl")
-    temporary_path = output_path + ".tmp"
-    with open(temporary_path, "wb") as handle:
-        pickle.dump(record, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(temporary_path, output_path)
-    return output_path
-
-
 def render_synchronized_episode(
-    save_dir, episode_id, camera_intrinsic, environment_frames,
+    save_dir, episode_id, camera_intrinsic, environment_frames, plan_records,
 ):
     """Render 10 Hz environment frames with model-rate diagnostics held."""
-    plan_dir = os.path.join(save_dir, f"synchronized_episode_{episode_id}")
-    plan_paths = sorted(glob.glob(os.path.join(plan_dir, "plan_*.pkl")))
-    if not plan_paths or not environment_frames:
+    if not plan_records or not environment_frames:
         raise RuntimeError(
-            f"Missing deferred records: plans={len(plan_paths)} "
+            f"Missing deferred records: plans={len(plan_records)} "
             f"environment_frames={len(environment_frames)}"
         )
-    plans = []
-    for path in plan_paths:
-        with open(path, "rb") as handle:
-            plans.append(pickle.load(handle))
+    plans = list(plan_records)
     frames = list(environment_frames)
     plans.sort(key=lambda item: item["available_frame_id"])
     frames.sort(key=lambda item: item["frame_id"])
@@ -783,6 +764,7 @@ def main():
     observation_frame_id = 0
     last_applied_commands = np.zeros((args_cli.num_envs, 2), dtype=np.float32)
     environment_frame_records = [list() for _ in range(args_cli.num_envs)]
+    plan_records = [list() for _ in range(args_cli.num_envs)]
 
     try:
         while simulation_app.is_running():
@@ -944,10 +926,7 @@ def main():
                                         current_point_goals_camera[i][1], 0.0,
                                     ])
                                 )
-                                save_synchronized_plan_record(
-                                    save_dir, current_episode_idx,
-                                    current_plan_revision,
-                                    {
+                                plan_records[i].append({
                                         "frame_id": current_snapshot["frame_id"],
                                         "time_s": current_snapshot["time_s"],
                                         "available_frame_id": observation_frame_id - 1,
@@ -969,8 +948,7 @@ def main():
                                         "all_trajectories_camera": current_all_trajectories_camera[i],
                                         "values": current_all_values[i],
                                         "mode_debug": current_mode_debug[i],
-                                    },
-                                )
+                                    })
                                 cached_mode_revision[i] = current_plan_revision
 
                         if mpc is None:
@@ -1095,9 +1073,11 @@ def main():
                                     save_dir, current_episode_idx,
                                     camera_intrinsic.cpu().numpy(),
                                     environment_frame_records[i],
+                                    plan_records[i],
                                 )
                             finally:
                                 environment_frame_records[i].clear()
+                                plan_records[i].clear()
                                 gc.collect()
                         elif fps_writer[i] is not None:
                             fps_writer[i].close()
@@ -1225,6 +1205,7 @@ def main():
                         cached_debug_panels[i] = None
                         cached_synchronized_frames[i] = None
                         environment_frame_records[i].clear()
+                        plan_records[i].clear()
                         last_applied_commands[i] = 0.0
                         observation_frame_id = 0
                         episode_steps[i] = 0
