@@ -33,6 +33,8 @@ import os
 import sys
 import json
 import copy
+import pickle
+import glob
 
 print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
 print(f"OMNI_USER_DATA_DIR: {os.environ.get('OMNI_USER_DATA_DIR', 'NOT SET')}")
@@ -256,6 +258,117 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
                 cv2.FONT_HERSHEY_SIMPLEX, .40, (255, 0, 255), 1,
                 cv2.LINE_AA)
     return canvas
+
+
+def save_synchronized_plan_record(save_dir, episode_id, revision, record):
+    """Persist one atomic planning snapshot for post-run visualization."""
+    record_dir = os.path.join(save_dir, f"synchronized_episode_{episode_id}")
+    os.makedirs(record_dir, exist_ok=True)
+    output_path = os.path.join(record_dir, f"plan_{int(revision):06d}.pkl")
+    temporary_path = output_path + ".tmp"
+    with open(temporary_path, "wb") as handle:
+        pickle.dump(record, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(temporary_path, output_path)
+    return output_path
+
+
+def render_synchronized_episode(save_dir, episode_id, camera_intrinsic):
+    """Render saved planning snapshots after simulation for timestamp fidelity."""
+    record_dir = os.path.join(save_dir, f"synchronized_episode_{episode_id}")
+    record_paths = sorted(glob.glob(os.path.join(record_dir, "plan_*.pkl")))
+    if not record_paths:
+        raise RuntimeError(f"No synchronized plan records in {record_dir}")
+    records = []
+    for path in record_paths:
+        with open(path, "rb") as handle:
+            records.append(pickle.load(handle))
+    records.sort(key=lambda item: (item["time_s"], item["frame_id"]))
+    times = np.asarray([item["time_s"] for item in records], dtype=np.float64)
+    intervals = np.diff(times)
+    intervals = intervals[intervals > 1e-6]
+    output_fps = (
+        float(np.clip(1.0 / np.median(intervals), 1.0, 10.0))
+        if len(intervals) else 1.0
+    )
+    manager = VisualizationManager(history_size=5)
+    manager.reset(initial_robot_pose=records[0]["robot_state"][:3])
+    output_path = os.path.join(save_dir, f"fps_{episode_id}.mp4")
+    writer = imageio.get_writer(output_path, fps=output_fps)
+    first_image = None
+    try:
+        for record in records:
+            if record["people_valid"]:
+                image = manager.visualize_trajectory_global_with_people(
+                    record["image"], record["depth"][:, :, None],
+                    camera_intrinsic, record["trajectory_world"],
+                    robot_pose=record["robot_state"],
+                    goal_position=record["goal_world"][:2],
+                    all_trajectories_points=record["all_trajectories_world"],
+                    all_trajectories_values=record["values"],
+                    people_positions=record["people_positions"],
+                    people_positions_dict=record["people_paths"],
+                )
+            else:
+                image = manager.visualize_trajectory_global(
+                    record["image"], record["depth"][:, :, None],
+                    camera_intrinsic, record["trajectory_world"],
+                    robot_pose=record["robot_state"],
+                    goal_position=record["goal_world"][:2],
+                    all_trajectories_points=record["all_trajectories_world"],
+                    all_trajectories_values=record["values"],
+                )
+            esdf = draw_esdf_candidates(
+                640, record["all_trajectories_camera"],
+                record["goal_camera"], record["mode_debug"], record["values"],
+            )
+            pad_top = max(0, (image.shape[0] - 640) // 2)
+            pad_bottom = max(0, image.shape[0] - 640 - pad_top)
+            esdf = np.pad(
+                esdf, ((pad_top, pad_bottom), (0, 0), (0, 0)),
+                mode="constant",
+            )
+            panel = draw_mode_debug_panel(
+                np.empty((image.shape[0], 0, 3), dtype=np.uint8),
+                record["mode_debug"],
+            )
+            image = np.concatenate((image, esdf, panel), axis=1)
+            image = draw_box_with_text(
+                image, 0, 0, 430, 50,
+                "cmd lin.:%.2f ang.:%.2f" % tuple(record["applied_command"]),
+            )
+            image = draw_box_with_text(
+                image, 0, 50, 430, 50,
+                "actual lin.:%.2f ang.:%.2f" % (
+                    record["robot_state"][3], record["robot_state"][4]
+                ),
+            )
+            image = draw_box_with_text(
+                image, 0, 770, 430, 50,
+                "cost min:%.2f max:%.2f" % (
+                    np.min(record["values"]), np.max(record["values"])
+                ),
+            )
+            image = draw_box_with_text(
+                image, 0, 820, 430, 50,
+                "plan frame:%d time:%.2fs" % (
+                    record["frame_id"], record["time_s"]
+                ),
+            )
+            if first_image is None:
+                first_image = image.copy()
+            writer.append_data(pad_video_frame(image))
+    finally:
+        writer.close()
+    if first_image is not None:
+        cv2.imwrite(
+            os.path.join(save_dir, f"first_frame_{episode_id}.png"),
+            cv2.cvtColor(first_image, cv2.COLOR_RGB2BGR),
+        )
+    print(
+        f"[SYNC RENDER] episode={episode_id} records={len(records)} "
+        f"fps={output_fps:.3f} output={output_path}", flush=True,
+    )
+    return output_path
 
 
 def validate_episode_start_state(
@@ -599,8 +712,9 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
 
     euclidean = np.sqrt(np.square(infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]).sum(axis=-1))
+    deferred_mode_render = algo in MODE_DEBUG_ALGOS
     fps_writer = [
-        imageio.get_writer(
+        None if deferred_mode_render else imageio.get_writer(
             save_dir + "fps_%d.mp4" % (args_cli.episode_start + i), fps=10
         )
         for i in range(scene_config.num_envs)
@@ -777,11 +891,8 @@ def main():
                                 )
                         if use_mode_debug:
                             if cached_mode_revision[i] != current_plan_revision:
-                                source_image = current_snapshot["image"][i]
-                                source_depth = current_snapshot["depth"][i]
                                 source_camera_pos = current_snapshot["camera_pos"][i]
                                 source_camera_rot = current_snapshot["camera_rot"][i]
-                                source_robot_state = current_snapshot["robot_state"][i]
                                 source_goal_world = (
                                     source_camera_pos
                                     + source_camera_rot @ np.array([
@@ -789,80 +900,29 @@ def main():
                                         current_point_goals_camera[i][1], 0.0,
                                     ])
                                 )
-                                source_people = current_snapshot["people_positions"]
-                                source_paths = current_snapshot["people_paths"]
-                                if current_snapshot["people_valid"]:
-                                    synchronized = vis_manager[i].visualize_trajectory_global_with_people(
-                                        source_image, source_depth[:, :, None],
-                                        camera_intrinsic.cpu().numpy(),
-                                        current_trajectory[i],
-                                        robot_pose=source_robot_state,
-                                        goal_position=source_goal_world[:2],
-                                        all_trajectories_points=current_all_trajectories[i],
-                                        all_trajectories_values=current_all_values[i],
-                                        people_positions=source_people,
-                                        people_positions_dict=source_paths,
-                                    )
-                                else:
-                                    synchronized = vis_manager[i].visualize_trajectory_global(
-                                        source_image, source_depth[:, :, None],
-                                        camera_intrinsic.cpu().numpy(),
-                                        current_trajectory[i],
-                                        robot_pose=source_robot_state,
-                                        goal_position=source_goal_world[:2],
-                                        all_trajectories_points=current_all_trajectories[i],
-                                        all_trajectories_values=current_all_values[i],
-                                    )
-                                esdf_square = draw_esdf_candidates(
-                                    640, current_all_trajectories_camera[i],
-                                    current_point_goals_camera[i], current_mode_debug[i],
-                                    current_all_values[i])
-                                pad_top = max(0, (synchronized.shape[0] - 640) // 2)
-                                pad_bottom = max(
-                                    0, synchronized.shape[0] - 640 - pad_top
+                                save_synchronized_plan_record(
+                                    save_dir, current_episode_idx,
+                                    current_plan_revision,
+                                    {
+                                        "frame_id": current_snapshot["frame_id"],
+                                        "time_s": current_snapshot["time_s"],
+                                        "image": current_snapshot["image"][i],
+                                        "depth": current_snapshot["depth"][i],
+                                        "robot_state": current_snapshot["robot_state"][i],
+                                        "applied_command": current_snapshot["applied_command"][i],
+                                        "people_positions": current_snapshot["people_positions"],
+                                        "people_paths": current_snapshot["people_paths"],
+                                        "people_valid": current_snapshot["people_valid"],
+                                        "goal_world": source_goal_world,
+                                        "goal_camera": current_point_goals_camera[i],
+                                        "trajectory_world": current_trajectory[i],
+                                        "all_trajectories_world": current_all_trajectories[i],
+                                        "all_trajectories_camera": current_all_trajectories_camera[i],
+                                        "values": current_all_values[i],
+                                        "mode_debug": current_mode_debug[i],
+                                    },
                                 )
-                                cached_esdf_views[i] = np.pad(
-                                    esdf_square,
-                                    ((pad_top, pad_bottom), (0, 0), (0, 0)),
-                                    mode="constant",
-                                )
-                                cached_debug_panels[i] = draw_mode_debug_panel(
-                                    np.empty((synchronized.shape[0], 0, 3), dtype=np.uint8),
-                                    current_mode_debug[i],
-                                )
-                                synchronized = np.concatenate((
-                                    synchronized,
-                                    cached_esdf_views[i],
-                                    cached_debug_panels[i],
-                                ), axis=1)
-                                source_command = current_snapshot["applied_command"][i]
-                                synchronized = draw_box_with_text(
-                                    synchronized, 0, 0, 430, 50,
-                                    "cmd lin.:%.2f ang.:%.2f" % tuple(source_command),
-                                )
-                                synchronized = draw_box_with_text(
-                                    synchronized, 0, 50, 430, 50,
-                                    "actual lin.:%.2f ang.:%.2f" % (
-                                        source_robot_state[3], source_robot_state[4]
-                                    ),
-                                )
-                                synchronized = draw_box_with_text(
-                                    synchronized, 0, 770, 430, 50,
-                                    "cost min:%.2f max:%.2f" % (
-                                        np.min(current_all_values[i]),
-                                        np.max(current_all_values[i]),
-                                    ),
-                                )
-                                synchronized = draw_box_with_text(
-                                    synchronized, 0, 820, 430, 50,
-                                    "plan frame:%d time:%.2fs" % (
-                                        current_snapshot["frame_id"],
-                                        current_snapshot["time_s"],
-                                    ),
-                                )
-                                cached_synchronized_frames[i] = synchronized
                                 cached_mode_revision[i] = current_plan_revision
-                            vis_image = cached_synchronized_frames[i].copy()
 
                         if mpc is None:
                             continue
@@ -898,24 +958,25 @@ def main():
                                     vis_image, 0, 820, 430, 50,
                                     "point goal:(%.2f, %.2f)" % (goals[i][0], goals[i][1])
                                 )
-                            if frame_count > 0:
-                                if frame_count == 1:
-                                    print(
-                                        f"[VIDEO FIRST FRAME] episode={current_episode_idx} "
-                                        f"goal_local={goals[i].tolist()}",
-                                        flush=True,
+                            if not use_mode_debug:
+                                if frame_count > 0:
+                                    if frame_count == 1:
+                                        print(
+                                            f"[VIDEO FIRST FRAME] episode={current_episode_idx} "
+                                            f"goal_local={goals[i].tolist()}",
+                                            flush=True,
+                                        )
+                                        cv2.imwrite(
+                                            os.path.join(
+                                                save_dir,
+                                                f"first_frame_{current_episode_idx}.png",
+                                            ),
+                                            cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR),
+                                        )
+                                    fps_writer[i].append_data(
+                                        pad_video_frame(vis_image)
                                     )
-                                    cv2.imwrite(
-                                        os.path.join(
-                                            save_dir,
-                                            f"first_frame_{current_episode_idx}.png",
-                                        ),
-                                        cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR),
-                                    )
-                                fps_writer[i].append_data(
-                                    pad_video_frame(vis_image)
-                                )
-                            frame_count += 1
+                                frame_count += 1
                         except Exception:
                             pass
 
@@ -979,7 +1040,13 @@ def main():
                             else:
                                 print(f"  {key}: {value}")
 
-                        fps_writer[i].close()
+                        if deferred_mode_render:
+                            render_synchronized_episode(
+                                save_dir, current_episode_idx,
+                                camera_intrinsic.cpu().numpy(),
+                            )
+                        elif fps_writer[i] is not None:
+                            fps_writer[i].close()
                         current_episode_idx += 1
                         write_metrics(evaluation_metrics, save_dir + "metric.csv")
 
@@ -1081,7 +1148,12 @@ def main():
                             env.env._recent_positions.clear()
 
                         euclidean[i] = np.sqrt(np.square(infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]).sum(axis=-1))[i]
-                        fps_writer[i] = imageio.get_writer(save_dir + "fps_%d.mp4" % current_episode_idx, fps=10)
+                        fps_writer[i] = (
+                            None if deferred_mode_render else imageio.get_writer(
+                                save_dir + "fps_%d.mp4" % current_episode_idx,
+                                fps=10,
+                            )
+                        )
                         trajectory_length[i] = 0.0
 
                         camera_pos = env.unwrapped.scene.sensors['camera_sensor'].data.pos_w.cpu().numpy()
