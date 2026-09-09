@@ -481,8 +481,38 @@ def main():
         action = torch.zeros((args_cli.num_envs, 2), device="cuda:0")
         obs, rewards, dones, infos = env.step(action)
 
-    # Preheating must not consume or partially advance benchmark episode 0.
-    # Force a fresh deterministic reset before opening its video/metrics row.
+    # Preheating advances the animation timeline as well as the robot.  Rebuild
+    # the requested first episode's people so a direct ``--episode_start N``
+    # run starts from the same character state as an in-process transition to
+    # episode N, instead of recording pedestrians already advanced by preheat.
+    if scene_config.people_simulation:
+        while env.unwrapped.scene._people_setup_in_progress:
+            simulation_app.update()
+        first_episode_path = os.path.join(
+            scene_path, f"episode_{args_cli.episode_start}.json"
+        )
+        env.unwrapped.scene.cfg.episode_json_path = first_episode_path
+        reset_future = asyncio.ensure_future(
+            env.unwrapped.scene._reset_people_for_episode(first_episode_path)
+        )
+        wait_count = 0
+        max_wait = 500
+        while not reset_future.done() and wait_count < max_wait:
+            simulation_app.update()
+            wait_count += 1
+            if wait_count % 50 == 0:
+                print(
+                    f"[INFO] Waiting for initial people reset... "
+                    f"({wait_count}/{max_wait})"
+                )
+        if not reset_future.done():
+            raise RuntimeError(
+                "Timed out rebuilding people after benchmark preheat"
+            )
+        reset_future.result()
+
+    # Force a fresh deterministic robot/camera reset before opening the first
+    # video and metrics row.
     set_benchmark_episode_ids(
         env.unwrapped,
         np.full(args_cli.num_envs, args_cli.episode_start, dtype=np.int64),
