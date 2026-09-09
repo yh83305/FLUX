@@ -8,7 +8,7 @@ try:
     import open3d as o3d
 except ImportError:
     o3d = None
-from typing import Optional, List, Tuple
+from typing import Any, Optional, List, Tuple
 from dataclasses import dataclass
 
 @dataclass
@@ -18,6 +18,13 @@ class PlanningInput:
     current_depth: Optional[np.ndarray] = None
     camera_pos: Optional[np.ndarray] = None
     camera_rot: Optional[np.ndarray] = None
+    robot_state: Optional[np.ndarray] = None
+    applied_command: Optional[np.ndarray] = None
+    people_positions: Optional[np.ndarray] = None
+    people_paths: Any = None
+    people_valid: bool = False
+    observation_frame_id: int = -1
+    observation_time_s: float = 0.0
 
 @dataclass
 class PlanningOutput:
@@ -32,6 +39,17 @@ class PlanningOutput:
     planning_error: Optional[str] = None
     episode_generation: int = -1
     plan_revision: int = 0
+    source_image: Optional[np.ndarray] = None
+    source_depth: Optional[np.ndarray] = None
+    source_camera_pos: Optional[np.ndarray] = None
+    source_camera_rot: Optional[np.ndarray] = None
+    source_robot_state: Optional[np.ndarray] = None
+    source_applied_command: Optional[np.ndarray] = None
+    source_people_positions: Optional[np.ndarray] = None
+    source_people_paths: Any = None
+    source_people_valid: bool = False
+    source_observation_frame_id: int = -1
+    source_observation_time_s: float = 0.0
 
 
 def pad_video_frame(image: np.ndarray, macro_block_size: int = 16) -> np.ndarray:

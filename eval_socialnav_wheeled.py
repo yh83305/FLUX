@@ -32,6 +32,7 @@ args_cli = parser.parse_args()
 import os
 import sys
 import json
+import copy
 
 print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
 print(f"OMNI_USER_DATA_DIR: {os.environ.get('OMNI_USER_DATA_DIR', 'NOT SET')}")
@@ -333,7 +334,13 @@ def planning_thread(env, camera_intrinsic):
     while not stop_event.is_set():
         try:
             with input_lock:
-                if planning_input.current_goal is None or planning_input.current_image is None or planning_input.current_depth is None or planning_input.camera_pos is None or planning_input.camera_rot is None:
+                if (planning_input.current_goal is None
+                        or planning_input.current_image is None
+                        or planning_input.current_depth is None
+                        or planning_input.camera_pos is None
+                        or planning_input.camera_rot is None
+                        or planning_input.robot_state is None
+                        or planning_input.applied_command is None):
                     time.sleep(0.01)
                     continue
                 goal = planning_input.current_goal.copy()
@@ -341,6 +348,16 @@ def planning_thread(env, camera_intrinsic):
                 depth = planning_input.current_depth.copy()
                 camera_pos = planning_input.camera_pos.copy()
                 camera_rot = planning_input.camera_rot.copy()
+                robot_state = planning_input.robot_state.copy()
+                applied_command = planning_input.applied_command.copy()
+                people_positions = (
+                    None if planning_input.people_positions is None
+                    else planning_input.people_positions.copy()
+                )
+                people_paths = copy.deepcopy(planning_input.people_paths)
+                people_valid = bool(planning_input.people_valid)
+                observation_frame_id = planning_input.observation_frame_id
+                observation_time_s = planning_input.observation_time_s
                 episode_generation = planning_input.episode_generation
             with output_lock:
                 planning_output.is_planning = True
@@ -401,6 +418,20 @@ def planning_thread(env, camera_intrinsic):
                         planning_output.point_goals_camera = goal.copy()
                         planning_output.all_values_camera = all_values_camera
                         planning_output.mode_debug = mode_debug
+                        planning_output.source_image = image.copy()
+                        planning_output.source_depth = depth.copy()
+                        planning_output.source_camera_pos = camera_pos.copy()
+                        planning_output.source_camera_rot = camera_rot.copy()
+                        planning_output.source_robot_state = robot_state.copy()
+                        planning_output.source_applied_command = applied_command.copy()
+                        planning_output.source_people_positions = (
+                            None if people_positions is None
+                            else people_positions.copy()
+                        )
+                        planning_output.source_people_paths = copy.deepcopy(people_paths)
+                        planning_output.source_people_valid = people_valid
+                        planning_output.source_observation_frame_id = observation_frame_id
+                        planning_output.source_observation_time_s = observation_time_s
                         planning_output.episode_generation = episode_generation
                         planning_output.plan_revision += 1
                         planning_output.planning_error = None
@@ -621,6 +652,9 @@ def main():
     cached_mode_revision = [-1] * args_cli.num_envs
     cached_esdf_views = [None] * args_cli.num_envs
     cached_debug_panels = [None] * args_cli.num_envs
+    cached_synchronized_frames = [None] * args_cli.num_envs
+    observation_frame_id = 0
+    last_applied_commands = np.zeros((args_cli.num_envs, 2), dtype=np.float32)
 
     try:
         while simulation_app.is_running():
@@ -634,14 +668,6 @@ def main():
                 camera_rot_quat = camera_rot_quat[:, [1, 2, 3, 0]]
                 camera_rot = R.from_quat(camera_rot_quat).as_matrix()
 
-                with input_lock:
-                    planning_input.current_goal = goals.copy()
-                    planning_input.current_image = images.copy()
-                    planning_input.current_depth = depths.copy()
-                    planning_input.camera_pos = camera_pos.copy()
-                    planning_input.camera_rot = camera_rot.copy()
-                    planning_input.episode_generation = current_episode_idx
-
                 robot_vel = env.unwrapped.scene.articulations['robot'].data.root_lin_vel_w[0, :2].norm().cpu().numpy()
                 robot_ang_vel = env.unwrapped.scene.articulations['robot'].data.root_ang_vel_w[0, 2].cpu().numpy()
 
@@ -650,6 +676,29 @@ def main():
                     np.arctan2(camera_rot[:, 1, 0], camera_rot[:, 0, 0]),
                     [robot_vel], [robot_ang_vel]
                 ], axis=-1)
+                snapshot_people, snapshot_people_paths, snapshot_people_valid = (
+                    get_people_positions(env)
+                )
+                with input_lock:
+                    planning_input.current_goal = goals.copy()
+                    planning_input.current_image = images.copy()
+                    planning_input.current_depth = depths.copy()
+                    planning_input.camera_pos = camera_pos.copy()
+                    planning_input.camera_rot = camera_rot.copy()
+                    planning_input.robot_state = x0.copy()
+                    planning_input.applied_command = last_applied_commands.copy()
+                    planning_input.people_positions = (
+                        None if snapshot_people is None
+                        else np.asarray(snapshot_people).copy()
+                    )
+                    planning_input.people_paths = copy.deepcopy(snapshot_people_paths)
+                    planning_input.people_valid = bool(snapshot_people_valid)
+                    planning_input.observation_frame_id = observation_frame_id
+                    planning_input.observation_time_s = float(
+                        episode_steps.max() * env.unwrapped.step_dt
+                    )
+                    planning_input.episode_generation = current_episode_idx
+                observation_frame_id += 1
                 current_trajectory = None
                 current_all_trajectories = None
                 current_all_values = None
@@ -657,6 +706,7 @@ def main():
                 current_point_goals_camera = None
                 current_mode_debug = None
                 current_plan_revision = -1
+                current_snapshot = None
                 with output_lock:
                     if (
                         planning_output.trajectory_points_world is not None
@@ -669,47 +719,107 @@ def main():
                         current_point_goals_camera = planning_output.point_goals_camera.copy()
                         current_mode_debug = planning_output.mode_debug
                         current_plan_revision = planning_output.plan_revision
+                        current_snapshot = {
+                            "image": planning_output.source_image.copy(),
+                            "depth": planning_output.source_depth.copy(),
+                            "camera_pos": planning_output.source_camera_pos.copy(),
+                            "camera_rot": planning_output.source_camera_rot.copy(),
+                            "robot_state": planning_output.source_robot_state.copy(),
+                            "applied_command": planning_output.source_applied_command.copy(),
+                            "people_positions": (
+                                None if planning_output.source_people_positions is None
+                                else planning_output.source_people_positions.copy()
+                            ),
+                            "people_paths": copy.deepcopy(
+                                planning_output.source_people_paths
+                            ),
+                            "people_valid": planning_output.source_people_valid,
+                            "frame_id": planning_output.source_observation_frame_id,
+                            "time_s": planning_output.source_observation_time_s,
+                        }
 
                 if current_trajectory is not None:
                     goal_world = camera_pos[0] + camera_rot[0] @ np.array([goals[0][0], goals[0][1], 0.0])
                     action_list = []
                     for i in range(args_cli.num_envs):
-                        people_positions, people_char_paths, pos_get_flag = get_people_positions(env)
+                        people_positions, people_char_paths, pos_get_flag = (
+                            snapshot_people, snapshot_people_paths,
+                            snapshot_people_valid
+                        )
+                        use_mode_debug = (
+                            algo in MODE_DEBUG_ALGOS and current_mode_debug
+                            and i < len(current_mode_debug)
+                        )
 
                         if pos_get_flag:
                             social_metrics_trackers[i].update(camera_pos[i], people_positions, env.unwrapped.step_dt)
 
-                            vis_image = vis_manager[i].visualize_trajectory_global_with_people(
-                                images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
-                                current_trajectory[i],
-                                robot_pose=x0[i],
-                                goal_position=goal_world[:2],
-                                all_trajectories_points=current_all_trajectories[i],
-                                all_trajectories_values=current_all_values[i],
-                                people_positions=people_positions,
-                                people_positions_dict=people_char_paths,
-                            )
-                        else:
-                            vis_image = vis_manager[i].visualize_trajectory_global(
-                                images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
-                                current_trajectory[i],
-                                robot_pose=x0[i],
-                                goal_position=goal_world[:2],
-                                all_trajectories_points=current_all_trajectories[i],
-                                all_trajectories_values=current_all_values[i]
-                            )
-
-                        use_mode_debug = (algo in MODE_DEBUG_ALGOS and current_mode_debug
-                                          and i < len(current_mode_debug))
+                        if not use_mode_debug:
+                            if pos_get_flag:
+                                vis_image = vis_manager[i].visualize_trajectory_global_with_people(
+                                    images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
+                                    current_trajectory[i],
+                                    robot_pose=x0[i],
+                                    goal_position=goal_world[:2],
+                                    all_trajectories_points=current_all_trajectories[i],
+                                    all_trajectories_values=current_all_values[i],
+                                    people_positions=people_positions,
+                                    people_positions_dict=people_char_paths,
+                                )
+                            else:
+                                vis_image = vis_manager[i].visualize_trajectory_global(
+                                    images[i], depths[i][:, :, None], camera_intrinsic.cpu().numpy(),
+                                    current_trajectory[i],
+                                    robot_pose=x0[i],
+                                    goal_position=goal_world[:2],
+                                    all_trajectories_points=current_all_trajectories[i],
+                                    all_trajectories_values=current_all_values[i]
+                                )
                         if use_mode_debug:
                             if cached_mode_revision[i] != current_plan_revision:
+                                source_image = current_snapshot["image"][i]
+                                source_depth = current_snapshot["depth"][i]
+                                source_camera_pos = current_snapshot["camera_pos"][i]
+                                source_camera_rot = current_snapshot["camera_rot"][i]
+                                source_robot_state = current_snapshot["robot_state"][i]
+                                source_goal_world = (
+                                    source_camera_pos
+                                    + source_camera_rot @ np.array([
+                                        current_point_goals_camera[i][0],
+                                        current_point_goals_camera[i][1], 0.0,
+                                    ])
+                                )
+                                source_people = current_snapshot["people_positions"]
+                                source_paths = current_snapshot["people_paths"]
+                                if current_snapshot["people_valid"]:
+                                    synchronized = vis_manager[i].visualize_trajectory_global_with_people(
+                                        source_image, source_depth[:, :, None],
+                                        camera_intrinsic.cpu().numpy(),
+                                        current_trajectory[i],
+                                        robot_pose=source_robot_state,
+                                        goal_position=source_goal_world[:2],
+                                        all_trajectories_points=current_all_trajectories[i],
+                                        all_trajectories_values=current_all_values[i],
+                                        people_positions=source_people,
+                                        people_positions_dict=source_paths,
+                                    )
+                                else:
+                                    synchronized = vis_manager[i].visualize_trajectory_global(
+                                        source_image, source_depth[:, :, None],
+                                        camera_intrinsic.cpu().numpy(),
+                                        current_trajectory[i],
+                                        robot_pose=source_robot_state,
+                                        goal_position=source_goal_world[:2],
+                                        all_trajectories_points=current_all_trajectories[i],
+                                        all_trajectories_values=current_all_values[i],
+                                    )
                                 esdf_square = draw_esdf_candidates(
                                     640, current_all_trajectories_camera[i],
                                     current_point_goals_camera[i], current_mode_debug[i],
                                     current_all_values[i])
-                                pad_top = max(0, (vis_image.shape[0] - 640) // 2)
+                                pad_top = max(0, (synchronized.shape[0] - 640) // 2)
                                 pad_bottom = max(
-                                    0, vis_image.shape[0] - 640 - pad_top
+                                    0, synchronized.shape[0] - 640 - pad_top
                                 )
                                 cached_esdf_views[i] = np.pad(
                                     esdf_square,
@@ -717,18 +827,42 @@ def main():
                                     mode="constant",
                                 )
                                 cached_debug_panels[i] = draw_mode_debug_panel(
-                                    np.empty((vis_image.shape[0], 0, 3), dtype=np.uint8),
+                                    np.empty((synchronized.shape[0], 0, 3), dtype=np.uint8),
                                     current_mode_debug[i],
                                 )
+                                synchronized = np.concatenate((
+                                    synchronized,
+                                    cached_esdf_views[i],
+                                    cached_debug_panels[i],
+                                ), axis=1)
+                                source_command = current_snapshot["applied_command"][i]
+                                synchronized = draw_box_with_text(
+                                    synchronized, 0, 0, 430, 50,
+                                    "cmd lin.:%.2f ang.:%.2f" % tuple(source_command),
+                                )
+                                synchronized = draw_box_with_text(
+                                    synchronized, 0, 50, 430, 50,
+                                    "actual lin.:%.2f ang.:%.2f" % (
+                                        source_robot_state[3], source_robot_state[4]
+                                    ),
+                                )
+                                synchronized = draw_box_with_text(
+                                    synchronized, 0, 770, 430, 50,
+                                    "cost min:%.2f max:%.2f" % (
+                                        np.min(current_all_values[i]),
+                                        np.max(current_all_values[i]),
+                                    ),
+                                )
+                                synchronized = draw_box_with_text(
+                                    synchronized, 0, 820, 430, 50,
+                                    "plan frame:%d time:%.2fs" % (
+                                        current_snapshot["frame_id"],
+                                        current_snapshot["time_s"],
+                                    ),
+                                )
+                                cached_synchronized_frames[i] = synchronized
                                 cached_mode_revision[i] = current_plan_revision
-                            # Keep the complete native SocialNav visualization.  Its
-                            # lower-left global map is wider than the RGB camera pane;
-                            # cropping to camera width hid the map beneath the ESDF.
-                            vis_image = np.concatenate((
-                                vis_image,
-                                cached_esdf_views[i],
-                                cached_debug_panels[i],
-                            ), axis=1)
+                            vis_image = cached_synchronized_frames[i].copy()
 
                         if mpc is None:
                             continue
@@ -736,13 +870,15 @@ def main():
                         v, w = opt_u_controls[1, 0], opt_u_controls[1, 1]
                         action = torch.tensor([v, w], device="cuda:0")
                         action_cpu = action.cpu().numpy()
+                        last_applied_commands[i] = action_cpu
                         joint_velocities = controller.forward(action_cpu).joint_velocities
                         action_list.append(joint_velocities)
 
                         try:
-                            vis_image = draw_box_with_text(vis_image, 0, 0, 430, 50, "cmd lin.:%.2f ang.:%.2f" % (v, w))
-                            vis_image = draw_box_with_text(vis_image, 0, 50, 430, 50, "actual lin.:%.2f ang.:%.2f" % (robot_vel, robot_ang_vel))
-                            if current_all_values is not None:
+                            if not use_mode_debug:
+                                vis_image = draw_box_with_text(vis_image, 0, 0, 430, 50, "cmd lin.:%.2f ang.:%.2f" % (v, w))
+                                vis_image = draw_box_with_text(vis_image, 0, 50, 430, 50, "actual lin.:%.2f ang.:%.2f" % (robot_vel, robot_ang_vel))
+                            if current_all_values is not None and not use_mode_debug:
                                 value_text = (
                                     "cost min:%.2f max:%.2f"
                                     if algo in MODE_DEBUG_ALGOS
@@ -757,10 +893,11 @@ def main():
                                     vis_image, 0, 770, 430, 50,
                                     value_text % value_pair,
                                 )
-                            vis_image = draw_box_with_text(
-                                vis_image, 0, 820, 430, 50,
-                                "point goal:(%.2f, %.2f)" % (goals[i][0], goals[i][1])
-                            )
+                            if not use_mode_debug:
+                                vis_image = draw_box_with_text(
+                                    vis_image, 0, 820, 430, 50,
+                                    "point goal:(%.2f, %.2f)" % (goals[i][0], goals[i][1])
+                                )
                             if frame_count > 0:
                                 if frame_count == 1:
                                     print(
@@ -883,6 +1020,17 @@ def main():
                                 planning_output.point_goals_camera = None
                                 planning_output.all_values_camera = None
                                 planning_output.mode_debug = None
+                                planning_output.source_image = None
+                                planning_output.source_depth = None
+                                planning_output.source_camera_pos = None
+                                planning_output.source_camera_rot = None
+                                planning_output.source_robot_state = None
+                                planning_output.source_applied_command = None
+                                planning_output.source_people_positions = None
+                                planning_output.source_people_paths = None
+                                planning_output.source_people_valid = False
+                                planning_output.source_observation_frame_id = -1
+                                planning_output.source_observation_time_s = 0.0
                                 planning_output.episode_generation = -1
                                 planning_output.is_planning = False
                                 planning_output.planning_error = None
@@ -949,6 +1097,9 @@ def main():
                         cached_mode_revision[i] = -1
                         cached_esdf_views[i] = None
                         cached_debug_panels[i] = None
+                        cached_synchronized_frames[i] = None
+                        last_applied_commands[i] = 0.0
+                        observation_frame_id = 0
                         episode_steps[i] = 0
                         social_metrics_trackers[i].reset()
 
