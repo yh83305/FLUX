@@ -35,6 +35,7 @@ import json
 import copy
 import pickle
 import glob
+import gc
 
 print(f"GPU {args_cli.gpu_id}, Scene {args_cli.scene_index}")
 print(f"OMNI_USER_DATA_DIR: {os.environ.get('OMNI_USER_DATA_DIR', 'NOT SET')}")
@@ -272,37 +273,22 @@ def save_synchronized_plan_record(save_dir, episode_id, revision, record):
     return output_path
 
 
-def save_environment_frame_record(save_dir, episode_id, frame_id, record):
-    """Persist a simulator-rate RGB/people/robot frame for deferred rendering."""
-    record_dir = os.path.join(save_dir, f"environment_episode_{episode_id}")
-    os.makedirs(record_dir, exist_ok=True)
-    output_path = os.path.join(record_dir, f"frame_{int(frame_id):06d}.pkl")
-    temporary_path = output_path + ".tmp"
-    with open(temporary_path, "wb") as handle:
-        pickle.dump(record, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(temporary_path, output_path)
-    return output_path
-
-
-def render_synchronized_episode(save_dir, episode_id, camera_intrinsic):
+def render_synchronized_episode(
+    save_dir, episode_id, camera_intrinsic, environment_frames,
+):
     """Render 10 Hz environment frames with model-rate diagnostics held."""
     plan_dir = os.path.join(save_dir, f"synchronized_episode_{episode_id}")
-    frame_dir = os.path.join(save_dir, f"environment_episode_{episode_id}")
     plan_paths = sorted(glob.glob(os.path.join(plan_dir, "plan_*.pkl")))
-    frame_paths = sorted(glob.glob(os.path.join(frame_dir, "frame_*.pkl")))
-    if not plan_paths or not frame_paths:
+    if not plan_paths or not environment_frames:
         raise RuntimeError(
             f"Missing deferred records: plans={len(plan_paths)} "
-            f"environment_frames={len(frame_paths)}"
+            f"environment_frames={len(environment_frames)}"
         )
     plans = []
     for path in plan_paths:
         with open(path, "rb") as handle:
             plans.append(pickle.load(handle))
-    frames = []
-    for path in frame_paths:
-        with open(path, "rb") as handle:
-            frames.append(pickle.load(handle))
+    frames = list(environment_frames)
     plans.sort(key=lambda item: item["available_frame_id"])
     frames.sort(key=lambda item: item["frame_id"])
     manager = VisualizationManager(history_size=5)
@@ -796,6 +782,7 @@ def main():
     cached_synchronized_frames = [None] * args_cli.num_envs
     observation_frame_id = 0
     last_applied_commands = np.zeros((args_cli.num_envs, 2), dtype=np.float32)
+    environment_frame_records = [list() for _ in range(args_cli.num_envs)]
 
     try:
         while simulation_app.is_running():
@@ -848,10 +835,7 @@ def main():
                                 goals[environment_id][1], 0.0,
                             ])
                         )
-                        save_environment_frame_record(
-                            save_dir, current_episode_idx,
-                            observation_frame_id,
-                            {
+                        environment_frame_records[environment_id].append({
                                 "frame_id": observation_frame_id,
                                 "time_s": float(
                                     episode_steps[environment_id]
@@ -871,8 +855,7 @@ def main():
                                 ),
                                 "people_valid": bool(snapshot_people_valid),
                                 "goal_world": frame_goal_world,
-                            },
-                        )
+                            })
                 observation_frame_id += 1
                 current_trajectory = None
                 current_all_trajectories = None
@@ -1107,10 +1090,15 @@ def main():
                                 print(f"  {key}: {value}")
 
                         if deferred_mode_render:
-                            render_synchronized_episode(
-                                save_dir, current_episode_idx,
-                                camera_intrinsic.cpu().numpy(),
-                            )
+                            try:
+                                render_synchronized_episode(
+                                    save_dir, current_episode_idx,
+                                    camera_intrinsic.cpu().numpy(),
+                                    environment_frame_records[i],
+                                )
+                            finally:
+                                environment_frame_records[i].clear()
+                                gc.collect()
                         elif fps_writer[i] is not None:
                             fps_writer[i].close()
                         current_episode_idx += 1
@@ -1236,6 +1224,7 @@ def main():
                         cached_esdf_views[i] = None
                         cached_debug_panels[i] = None
                         cached_synchronized_frames[i] = None
+                        environment_frame_records[i].clear()
                         last_applied_commands[i] = 0.0
                         observation_frame_id = 0
                         episode_steps[i] = 0
