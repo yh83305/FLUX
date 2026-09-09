@@ -132,10 +132,10 @@ def draw_mode_debug_panel(image, debug):
     """Append the explicit-mode candidate selection table."""
     rows = debug.get("candidate_debug", []) if isinstance(debug, dict) else []
     panel = np.full((image.shape[0], 520, 3), (18, 22, 28), dtype=np.uint8)
-    cv2.putText(panel, "MODE SELECT: unified score + argmax",
+    cv2.putText(panel, "MODE SELECT: unified cost + argmin",
                 (12, 24), cv2.FONT_HERSHEY_SIMPLEX, .58, (255, 255, 255), 1, cv2.LINE_AA)
     columns = ((8, "idx"), (42, "mode"), (80, "P"), (115, "goal"),
-               (188, "esdf"), (245, "unk"), (320, "final"), (405, "state"))
+               (188, "esdf"), (245, "unk"), (320, "cost"), (405, "state"))
     for x, label in columns:
         cv2.putText(panel, label, (x, 52), cv2.FONT_HERSHEY_SIMPLEX,
                     .38, (190, 200, 210), 1, cv2.LINE_AA)
@@ -145,10 +145,10 @@ def draw_mode_debug_panel(image, debug):
         y = 78 + line * 24
         values = ((8, f"{row.get('index', -1):02d}"), (42, f"m{row.get('mode', -1)}"),
                   (80, _number(row.get("prior"))),
-                  (115, _number(row.get("goal_score"), True)),
+                  (115, _number(row.get("goal_cost"))),
                   (188, _number(row.get("minimum_esdf_clearance_m"), True)),
                   (245, _number(row.get("unknown_fraction"))),
-                  (320, _number(row.get("final_score"), True)),
+                  (320, _number(row.get("final_cost"))),
                   (405, "SELECTED" if selected else "SCORED"))
         for x, value in values:
             cv2.putText(panel, value, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
@@ -183,25 +183,23 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
     display_maximum = float(meta.get("display_maximum_m", 0.60))
     values = np.asarray(
         candidate_values if candidate_values is not None else
-        [row.get("final_score", np.nan) for row in rows],
+        [row.get("final_cost", np.nan) for row in rows],
         dtype=np.float32,
     ).reshape(-1)
-    valid_scores = np.isfinite(values)
-    finite_values = values[valid_scores]
+    valid_costs = np.isfinite(values)
+    finite_values = values[valid_costs]
     values_min = float(finite_values.min()) if finite_values.size else 0.0
     values_max = float(finite_values.max()) if finite_values.size else 0.0
 
-    def relative_score_color(index):
-        if index >= len(values) or not valid_scores[index]:
+    def relative_cost_color(index):
+        if index >= len(values) or not valid_costs[index]:
             return (128, 128, 128)
         spread = values_max - values_min
         relative = 0.5 if spread <= 1e-8 else float(np.clip(
             (values[index] - values_min) / spread, 0.0, 1.0
         ))
-        # RGB: low=blue, middle=green, high=red; selected stays yellow.
-        if relative < 0.5:
-            return (0, int(510 * relative), int(255 * (1.0 - 2.0 * relative)))
-        return (int(510 * (relative - 0.5)), int(510 * (1.0 - relative)), 0)
+        # RGB: low cost=green, middle=orange, high cost=red.
+        return (int(255 * relative), int(255 * (1.0 - relative)), 0)
     for index, trajectory in enumerate(np.asarray(trajectories)):
         px = (-(trajectory[:, 1]) - float(origin_r)) / voxel * sx
         py = (esdf.shape[0] - 1 - (trajectory[:, 0] - float(origin_f)) / voxel) * sy
@@ -220,7 +218,7 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
             continue
         mode = int(rows[index].get("mode", -1)) if index < len(rows) else -1
         unknown = float(rows[index].get("unknown_fraction", 0.0)) if index < len(rows) else 0.0
-        color = (255, 255, 0) if index == selected else relative_score_color(index)
+        color = (255, 255, 0) if index == selected else relative_cost_color(index)
         cv2.polylines(canvas, [points], False, color, 5 if index == selected else 2, cv2.LINE_AA)
         cv2.putText(canvas, f"m{mode} u={unknown:.2f}", tuple(points[-1]), cv2.FONT_HERSHEY_SIMPLEX,
                     .42, color, 1, cv2.LINE_AA)
@@ -230,7 +228,7 @@ def draw_esdf_candidates(size, trajectories, goal, debug, candidate_values=None)
         gy = int(round((esdf.shape[0] - 1 - (goal[0] - float(origin_f)) / voxel) * sy))
         cv2.drawMarker(canvas, (int(np.clip(gx, 8, size-8)), int(np.clip(gy, 8, size-8))),
                        (255, 255, 255), cv2.MARKER_CROSS, 18, 2, cv2.LINE_AA)
-    cv2.putText(canvas, "relative score: blue=low green=mid red=high yellow=selected", (10, 24),
+    cv2.putText(canvas, "relative cost: green=low red=high yellow=selected", (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, .48, (255, 255, 255), 1, cv2.LINE_AA)
     # Use the exact range supplied by the selector. The free-space end equals
     # clearance_cap_m, where its soft clearance bonus saturates.
