@@ -28,8 +28,9 @@ def value_to_color(value, values_min, values_max):
     normalized = 0.5 if spread <= 1e-8 else float(np.clip(
         (float(value) - float(values_min)) / spread, 0.0, 1.0
     ))
-    # OpenCV colors are BGR: low=green, high=red, with no blue component.
-    return (0, int(255 * (1.0 - normalized)), int(255 * normalized))
+    # This visualization buffer is ultimately encoded by imageio as RGB.
+    # Keep blue at zero: low=green, high=red.
+    return (int(255 * normalized), int(255 * (1.0 - normalized)), 0)
 
 # Helper function to transform world points to vis_coords
 def transform_to_vis_coords(world_pts, current_pose, res, offset, size):
