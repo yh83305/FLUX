@@ -272,54 +272,79 @@ def save_synchronized_plan_record(save_dir, episode_id, revision, record):
     return output_path
 
 
+def save_environment_frame_record(save_dir, episode_id, frame_id, record):
+    """Persist a simulator-rate RGB/people/robot frame for deferred rendering."""
+    record_dir = os.path.join(save_dir, f"environment_episode_{episode_id}")
+    os.makedirs(record_dir, exist_ok=True)
+    output_path = os.path.join(record_dir, f"frame_{int(frame_id):06d}.pkl")
+    temporary_path = output_path + ".tmp"
+    with open(temporary_path, "wb") as handle:
+        pickle.dump(record, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(temporary_path, output_path)
+    return output_path
+
+
 def render_synchronized_episode(save_dir, episode_id, camera_intrinsic):
-    """Render saved planning snapshots after simulation for timestamp fidelity."""
-    record_dir = os.path.join(save_dir, f"synchronized_episode_{episode_id}")
-    record_paths = sorted(glob.glob(os.path.join(record_dir, "plan_*.pkl")))
-    if not record_paths:
-        raise RuntimeError(f"No synchronized plan records in {record_dir}")
-    records = []
-    for path in record_paths:
+    """Render 10 Hz environment frames with model-rate diagnostics held."""
+    plan_dir = os.path.join(save_dir, f"synchronized_episode_{episode_id}")
+    frame_dir = os.path.join(save_dir, f"environment_episode_{episode_id}")
+    plan_paths = sorted(glob.glob(os.path.join(plan_dir, "plan_*.pkl")))
+    frame_paths = sorted(glob.glob(os.path.join(frame_dir, "frame_*.pkl")))
+    if not plan_paths or not frame_paths:
+        raise RuntimeError(
+            f"Missing deferred records: plans={len(plan_paths)} "
+            f"environment_frames={len(frame_paths)}"
+        )
+    plans = []
+    for path in plan_paths:
         with open(path, "rb") as handle:
-            records.append(pickle.load(handle))
-    records.sort(key=lambda item: (item["time_s"], item["frame_id"]))
-    times = np.asarray([item["time_s"] for item in records], dtype=np.float64)
-    intervals = np.diff(times)
-    intervals = intervals[intervals > 1e-6]
-    output_fps = (
-        float(np.clip(1.0 / np.median(intervals), 1.0, 10.0))
-        if len(intervals) else 1.0
-    )
+            plans.append(pickle.load(handle))
+    frames = []
+    for path in frame_paths:
+        with open(path, "rb") as handle:
+            frames.append(pickle.load(handle))
+    plans.sort(key=lambda item: item["available_frame_id"])
+    frames.sort(key=lambda item: item["frame_id"])
     manager = VisualizationManager(history_size=5)
-    manager.reset(initial_robot_pose=records[0]["robot_state"][:3])
+    manager.reset(initial_robot_pose=frames[0]["robot_state"][:3])
     output_path = os.path.join(save_dir, f"fps_{episode_id}.mp4")
-    writer = imageio.get_writer(output_path, fps=output_fps)
+    writer = imageio.get_writer(output_path, fps=10.0)
     first_image = None
+    plan_index = -1
     try:
-        for record in records:
-            if record["people_valid"]:
+        for frame in frames:
+            while (
+                plan_index + 1 < len(plans)
+                and plans[plan_index + 1]["available_frame_id"]
+                <= frame["frame_id"]
+            ):
+                plan_index += 1
+            if plan_index < 0:
+                continue
+            plan = plans[plan_index]
+            if frame["people_valid"]:
                 image = manager.visualize_trajectory_global_with_people(
-                    record["image"], record["depth"][:, :, None],
-                    camera_intrinsic, record["trajectory_world"],
-                    robot_pose=record["robot_state"],
-                    goal_position=record["goal_world"][:2],
-                    all_trajectories_points=record["all_trajectories_world"],
-                    all_trajectories_values=record["values"],
-                    people_positions=record["people_positions"],
-                    people_positions_dict=record["people_paths"],
+                    frame["image"], frame["depth"][:, :, None],
+                    camera_intrinsic, plan["trajectory_world"],
+                    robot_pose=frame["robot_state"],
+                    goal_position=frame["goal_world"][:2],
+                    all_trajectories_points=plan["all_trajectories_world"],
+                    all_trajectories_values=plan["values"],
+                    people_positions=frame["people_positions"],
+                    people_positions_dict=frame["people_paths"],
                 )
             else:
                 image = manager.visualize_trajectory_global(
-                    record["image"], record["depth"][:, :, None],
-                    camera_intrinsic, record["trajectory_world"],
-                    robot_pose=record["robot_state"],
-                    goal_position=record["goal_world"][:2],
-                    all_trajectories_points=record["all_trajectories_world"],
-                    all_trajectories_values=record["values"],
+                    frame["image"], frame["depth"][:, :, None],
+                    camera_intrinsic, plan["trajectory_world"],
+                    robot_pose=frame["robot_state"],
+                    goal_position=frame["goal_world"][:2],
+                    all_trajectories_points=plan["all_trajectories_world"],
+                    all_trajectories_values=plan["values"],
                 )
             esdf = draw_esdf_candidates(
-                640, record["all_trajectories_camera"],
-                record["goal_camera"], record["mode_debug"], record["values"],
+                640, plan["all_trajectories_camera"],
+                plan["goal_camera"], plan["mode_debug"], plan["values"],
             )
             pad_top = max(0, (image.shape[0] - 640) // 2)
             pad_bottom = max(0, image.shape[0] - 640 - pad_top)
@@ -329,29 +354,30 @@ def render_synchronized_episode(save_dir, episode_id, camera_intrinsic):
             )
             panel = draw_mode_debug_panel(
                 np.empty((image.shape[0], 0, 3), dtype=np.uint8),
-                record["mode_debug"],
+                plan["mode_debug"],
             )
             image = np.concatenate((image, esdf, panel), axis=1)
             image = draw_box_with_text(
                 image, 0, 0, 430, 50,
-                "cmd lin.:%.2f ang.:%.2f" % tuple(record["applied_command"]),
+                "cmd lin.:%.2f ang.:%.2f" % tuple(frame["applied_command"]),
             )
             image = draw_box_with_text(
                 image, 0, 50, 430, 50,
                 "actual lin.:%.2f ang.:%.2f" % (
-                    record["robot_state"][3], record["robot_state"][4]
+                    frame["robot_state"][3], frame["robot_state"][4]
                 ),
             )
             image = draw_box_with_text(
                 image, 0, 770, 430, 50,
                 "cost min:%.2f max:%.2f" % (
-                    np.min(record["values"]), np.max(record["values"])
+                    np.min(plan["values"]), np.max(plan["values"])
                 ),
             )
             image = draw_box_with_text(
                 image, 0, 820, 430, 50,
-                "plan frame:%d time:%.2fs" % (
-                    record["frame_id"], record["time_s"]
+                "frame:%d plan:%d age:%.2fs" % (
+                    frame["frame_id"], plan["frame_id"],
+                    max(0.0, frame["time_s"] - plan["time_s"]),
                 ),
             )
             if first_image is None:
@@ -365,8 +391,9 @@ def render_synchronized_episode(save_dir, episode_id, camera_intrinsic):
             cv2.cvtColor(first_image, cv2.COLOR_RGB2BGR),
         )
     print(
-        f"[SYNC RENDER] episode={episode_id} records={len(records)} "
-        f"fps={output_fps:.3f} output={output_path}", flush=True,
+        f"[SYNC RENDER] episode={episode_id} plans={len(plans)} "
+        f"environment_frames={len(frames)} "
+        f"fps=10.000 output={output_path}", flush=True,
     )
     return output_path
 
@@ -812,6 +839,40 @@ def main():
                         episode_steps.max() * env.unwrapped.step_dt
                     )
                     planning_input.episode_generation = current_episode_idx
+                if deferred_mode_render:
+                    for environment_id in range(args_cli.num_envs):
+                        frame_goal_world = (
+                            camera_pos[environment_id]
+                            + camera_rot[environment_id] @ np.array([
+                                goals[environment_id][0],
+                                goals[environment_id][1], 0.0,
+                            ])
+                        )
+                        save_environment_frame_record(
+                            save_dir, current_episode_idx,
+                            observation_frame_id,
+                            {
+                                "frame_id": observation_frame_id,
+                                "time_s": float(
+                                    episode_steps[environment_id]
+                                    * env.unwrapped.step_dt
+                                ),
+                                "image": images[environment_id].copy(),
+                                "depth": depths[environment_id].copy(),
+                                "robot_state": x0[environment_id].copy(),
+                                "applied_command": last_applied_commands[
+                                    environment_id
+                                ].copy(),
+                                "people_positions": copy.deepcopy(
+                                    snapshot_people
+                                ),
+                                "people_paths": copy.deepcopy(
+                                    snapshot_people_paths
+                                ),
+                                "people_valid": bool(snapshot_people_valid),
+                                "goal_world": frame_goal_world,
+                            },
+                        )
                 observation_frame_id += 1
                 current_trajectory = None
                 current_all_trajectories = None
@@ -906,6 +967,11 @@ def main():
                                     {
                                         "frame_id": current_snapshot["frame_id"],
                                         "time_s": current_snapshot["time_s"],
+                                        "available_frame_id": observation_frame_id - 1,
+                                        "available_time_s": float(
+                                            episode_steps[i]
+                                            * env.unwrapped.step_dt
+                                        ),
                                         "image": current_snapshot["image"][i],
                                         "depth": current_snapshot["depth"][i],
                                         "robot_state": current_snapshot["robot_state"][i],
