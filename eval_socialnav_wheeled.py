@@ -115,7 +115,8 @@ mpc = None
 
 MODE_DEBUG_ALGOS = {"flux_explicit_modes_rule16", "flux_direction5_speed3_rule16",
                     "flux_predicted_prototype_rule16", "flux_gt_factorized_rule16",
-                    "flux_direction5_speed3_rule15", "flux_gt_factorized_rule15"}
+                    "flux_direction5_speed3_rule15", "flux_gt_factorized_rule15",
+                    "flux_gt_factorized_rule15_continuity"}
 
 
 def _number(value, signed=False):
