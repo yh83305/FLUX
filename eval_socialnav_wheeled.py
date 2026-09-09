@@ -708,9 +708,19 @@ def main():
                             vis_image = draw_box_with_text(vis_image, 0, 0, 430, 50, "cmd lin.:%.2f ang.:%.2f" % (v, w))
                             vis_image = draw_box_with_text(vis_image, 0, 50, 430, 50, "actual lin.:%.2f ang.:%.2f" % (robot_vel, robot_ang_vel))
                             if current_all_values is not None:
+                                value_text = (
+                                    "cost min:%.2f max:%.2f"
+                                    if algo in MODE_DEBUG_ALGOS
+                                    else "critic max:%.2f min:%.2f"
+                                )
+                                value_pair = (
+                                    (np.min(current_all_values[i]), np.max(current_all_values[i]))
+                                    if algo in MODE_DEBUG_ALGOS
+                                    else (np.max(current_all_values[i]), np.min(current_all_values[i]))
+                                )
                                 vis_image = draw_box_with_text(
                                     vis_image, 0, 770, 430, 50,
-                                    "critic max:%.2f min:%.2f" % (np.max(current_all_values[i]), np.min(current_all_values[i]))
+                                    value_text % value_pair,
                                 )
                             vis_image = draw_box_with_text(
                                 vis_image, 0, 820, 430, 50,
