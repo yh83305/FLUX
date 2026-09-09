@@ -98,6 +98,7 @@ from configs.tasks import *
 from utils_tasks.client_utils import navigator_reset, pointgoal_step
 from utils_tasks.visualization_utils import VisualizationManager
 from utils_tasks.tracking_utils import MPC_Controller
+from utils_tasks.mode_tracking_utils import ModeMPCController
 from utils_tasks.sim_utils import cleanup_simulation, register_signal_handlers, setup_all_lighting
 from socialnav_metrics import (
     SocialMetricsTracker, get_people_positions, write_socialnav_summary,
@@ -360,7 +361,10 @@ def planning_thread(env, camera_intrinsic):
                     trajectory_points_world.append(point_world[:2])
                 trajectory_points_world = np.array(trajectory_points_world)
                 batch_optimal_points_world.append(trajectory_points_world)
-                mpc = MPC_Controller(
+                mpc_class = (
+                    ModeMPCController if mode_debug else MPC_Controller
+                )
+                mpc = mpc_class(
                     trajectory_points_world,
                     desired_v=args_cli.speed,
                     v_max=args_cli.speed,
