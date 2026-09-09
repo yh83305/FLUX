@@ -18,8 +18,7 @@ MODE_TRAJECTORY_COLORS = (
     (230, 80, 255),
 )
 
-# Draw all trajectories with colors based on values
-# Define color mapping function from value to color (blue to red gradient)
+# Draw all trajectories with a shared green-to-red value gradient.
 def value_to_color(value, values_min, values_max):
     if not np.isfinite(value):
         return (128, 128, 128)
@@ -29,17 +28,8 @@ def value_to_color(value, values_min, values_max):
     normalized = 0.5 if spread <= 1e-8 else float(np.clip(
         (float(value) - float(values_min)) / spread, 0.0, 1.0
     ))
-    # RGB: low=blue, middle=green, high=red. Yellow remains reserved for the
-    # selected trajectory in explicit-mode visualizations.
-    if normalized < 0.5:
-        b = 0
-        g = int(510 * normalized)
-        r = int(255 * (1 - 2 * normalized))
-    else:
-        b = int(510 * (normalized - 0.5))
-        g = int(510 * (1 - normalized))
-        r = 0
-    return (b, g, r)  # BGR
+    # OpenCV colors are BGR: low=green, high=red, with no blue component.
+    return (0, int(255 * (1.0 - normalized)), int(255 * normalized))
 
 # Helper function to transform world points to vis_coords
 def transform_to_vis_coords(world_pts, current_pose, res, offset, size):
