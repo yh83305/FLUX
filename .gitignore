@@ -11,6 +11,7 @@ assets/scenes/SkyTexture/*
 assets/scenes/embodiedscan/*
 # 排除 assets 中的 scenes
 assets/n1_eval_scenes/
+assets/dynbench
 assets/dynbench/
 assets/scenes/
 
@@ -37,3 +38,10 @@ v2_generate_social_nav_dataset_from_usd.py
 v2_generate_social_nav_dataset.py
 train_grpo.py
 temp/
+
+# FLUX benchmark runtime artifacts
+/*.log
+/frame_*_socialnav_*.png
+/smoke_*/
+/socialnav_*/
+/validate_*/
