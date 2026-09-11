@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import math
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -36,11 +36,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root", default="/data/DynBench/occupancy_maps"
     )
+    parser.add_argument(
+        "--flat-output", action="store_true",
+        help="Write files directly under output-root instead of a scene subfolder.",
+    )
     parser.add_argument("--resolution", type=float, default=0.05)
     parser.add_argument("--padding", type=float, default=2.0)
     parser.add_argument("--floor-z", type=float, default=0.0)
-    parser.add_argument("--min-height", type=float, default=0.05)
-    parser.add_argument("--max-height", type=float, default=1.20)
+    parser.add_argument("--min-height", type=float, default=0.15)
+    parser.add_argument("--max-height", type=float, default=1.35)
+    parser.add_argument("--height-step", type=float, default=0.20)
+    parser.add_argument(
+        "--multi-height", action="store_true",
+        help="Rasterize all height layers; default uses only the first layer "
+        "because repeated OMAP generation can terminate Isaac Sim.",
+    )
     parser.add_argument(
         "--max-endpoint-snap", type=float, default=0.15,
         help="Maximum accepted start/goal distance to a free pixel.",
@@ -92,62 +102,135 @@ def grid_bounds(points: np.ndarray, padding: float, resolution: float):
     return lower, upper
 
 
-async def generate_physx_map(
+def generate_physx_map(
     usd_path: Path,
     lower_xy: np.ndarray,
     upper_xy: np.ndarray,
     args: argparse.Namespace,
+    app,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     import omni.kit.app
     import omni.physx
     import omni.timeline
     import omni.usd
-    from isaacsim.asset.gen.omap.bindings import _omap
-    from isaacsim.core.utils.stage import open_stage_async
-    from pxr import Sdf, UsdPhysics
+    from isaacsim.core.utils.stage import open_stage
+    from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
+    print("[DynBench OMap] enabling omap extension", flush=True)
     manager = omni.kit.app.get_app().get_extension_manager()
     manager.set_extension_enabled_immediate("isaacsim.asset.gen.omap", True)
-    await omni.kit.app.get_app().next_update_async()
-    opened, error = await open_stage_async(str(usd_path))
+    app.update()
+    from isaacsim.asset.gen.omap.bindings import _omap
+    print("[DynBench OMap] opening USD", flush=True)
+    opened = open_stage(str(usd_path))
+    print(f"[DynBench OMap] USD opened={opened}", flush=True)
     if not opened:
-        raise RuntimeError(f"Failed to open {usd_path}: {error}")
+        raise RuntimeError(f"Failed to open {usd_path}")
     context = omni.usd.get_context()
+    loading_start = time.monotonic()
     while context.get_stage_loading_status()[2] > 0:
-        await omni.kit.app.get_app().next_update_async()
+        if time.monotonic() - loading_start > 120.0:
+            status = context.get_stage_loading_status()
+            raise TimeoutError(f"Timed out waiting for USD dependencies: {status}")
+        app.update()
     stage = context.get_stage()
+    bbox_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]
+    )
+    world_range = bbox_cache.ComputeWorldBound(stage.GetPseudoRoot()).ComputeAlignedRange()
+    collision_count = 0
+    geometry_count = 0
+    for prim in stage.Traverse():
+        if not (prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Cube)):
+            continue
+        geometry_count += 1
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI.Apply(prim).CreateCollisionEnabledAttr(True)
+        if prim.IsA(UsdGeom.Mesh):
+            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(prim)
+            approximation = mesh_collision.GetApproximationAttr()
+            if not approximation.HasAuthoredValueOpinion():
+                mesh_collision.CreateApproximationAttr().Set("none")
+        collision_count += 1
+    print(
+        f"[DynBench OMap] geometry={geometry_count} collisions={collision_count} "
+        f"world_min={list(world_range.GetMin())} world_max={list(world_range.GetMax())}",
+        flush=True,
+    )
+    for _ in range(4):
+        app.update()
     if not stage.GetPrimAtPath("/World/physicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, Sdf.Path("/World/physicsScene"))
     timeline = omni.timeline.get_timeline_interface()
     timeline.play()
     for _ in range(12):
-        await omni.kit.app.get_app().next_update_async()
+        app.update()
 
-    generator = _omap.Generator(
-        omni.physx.acquire_physx_interface(), context.get_stage_id()
-    )
-    generator.update_settings(float(args.resolution), 1.0, 0.0, 0.5)
-    generator.set_transform(
-        (0.0, 0.0, float(args.floor_z)),
-        (float(lower_xy[0]), float(lower_xy[1]), float(args.min_height)),
-        (float(upper_xy[0]), float(upper_xy[1]), float(args.max_height)),
-    )
-    await omni.kit.app.get_app().next_update_async()
-    generator.generate2d()
-    await omni.kit.app.get_app().next_update_async()
-    dimensions = np.asarray(generator.get_dimensions(), dtype=np.int64)
-    raw = np.asarray(generator.get_buffer(), dtype=np.float32)
-    expected = int(dimensions[0] * dimensions[1])
-    if len(raw) != expected or expected == 0:
-        raise RuntimeError(
-            f"Occupancy generator returned {len(raw)} cells for {dimensions}"
+    if args.multi_height:
+        heights = np.arange(
+            float(args.min_height),
+            float(args.max_height) + 0.5 * float(args.height_step),
+            float(args.height_step),
+        ) + float(args.floor_z)
+    else:
+        heights = np.asarray([float(args.min_height) + float(args.floor_z)])
+    layers = []
+    dimensions = None
+    min_bound = max_bound = None
+    for height in heights:
+        # OMAP keeps internal state across generate() calls. Reacquiring the
+        # interface per height avoids a silent Isaac Sim shutdown when a stage
+        # is rasterized repeatedly at different z values.
+        generator = _omap.acquire_omap_interface()
+        try:
+            generator.set_cell_size(float(args.resolution))
+            generator.set_transform(
+                (0.0, 0.0, float(height)),
+                (float(lower_xy[0]), float(lower_xy[1]), 0.0),
+                (float(upper_xy[0]), float(upper_xy[1]), 0.0),
+            )
+            generator.update()
+            app.update()
+            generator.generate()
+            app.update()
+            layer_dimensions = np.asarray(generator.get_dimensions(), dtype=np.int64)
+            raw = np.asarray(generator.get_buffer(), dtype=np.float32).copy()
+            layer_min_bound = np.asarray(
+                generator.get_min_bound(), dtype=np.float64
+            )[:2]
+            layer_max_bound = np.asarray(
+                generator.get_max_bound(), dtype=np.float64
+            )[:2]
+        finally:
+            _omap.release_omap_interface(generator)
+        expected = int(layer_dimensions[0] * layer_dimensions[1])
+        if len(raw) != expected or expected == 0:
+            raise RuntimeError(
+                f"Occupancy generator returned {len(raw)} cells for "
+                f"{layer_dimensions} at z={height:.3f}"
+            )
+        if dimensions is not None and not np.array_equal(
+            dimensions, layer_dimensions
+        ):
+            raise RuntimeError("Occupancy dimensions changed between height layers")
+        dimensions = layer_dimensions
+        layers.append(raw)
+        unique, counts = np.unique(raw, return_counts=True)
+        print(
+            f"[DynBench OMap] z={height:.3f} "
+            f"buffer_values={dict(zip(unique.tolist(), counts.tolist()))}",
+            flush=True,
         )
+        min_bound = layer_min_bound
+        max_bound = layer_max_bound
+    stacked = np.stack(layers)
+    raw = np.full(stacked.shape[1], 0.5, dtype=np.float32)
+    raw[np.all(np.isclose(stacked, 0.0), axis=0)] = 0.0
+    raw[np.any(np.isclose(stacked, 1.0), axis=0)] = 1.0
     # The generator buffer is row-major from min-y to max-y. Images grow
     # downward, so flip only Y to obtain standard map image coordinates.
     values = raw.reshape(int(dimensions[1]), int(dimensions[0]))
     free_image = np.flipud(np.isclose(values, 0.0)).copy()
-    min_bound = np.asarray(generator.get_min_bound(), dtype=np.float64)[:2]
-    max_bound = np.asarray(generator.get_max_bound(), dtype=np.float64)[:2]
     timeline.stop()
     return free_image, min_bound, max_bound
 
@@ -231,7 +314,9 @@ def save_outputs(
     episodes: list[dict],
     args: argparse.Namespace,
 ) -> dict:
-    output_dir = Path(args.output_root).expanduser().resolve() / scene_name
+    output_dir = Path(args.output_root).expanduser().resolve()
+    if not args.flat_output:
+        output_dir /= scene_name
     output_dir.mkdir(parents=True, exist_ok=True)
     # MapMetadata treats origin as the centre of the lower-left pixel.
     origin_xy = min_bound + 0.5 * float(args.resolution)
@@ -261,6 +346,7 @@ def save_outputs(
         "resolution_m": float(args.resolution),
         "floor_z_m": float(args.floor_z),
         "height_range_m": [float(args.min_height), float(args.max_height)],
+        "height_step_m": float(args.height_step),
         "origin_xy_m": origin_xy.tolist(),
         "generator_min_bound_xy_m": min_bound.tolist(),
         "generator_max_bound_xy_m": max_bound.tolist(),
@@ -285,7 +371,7 @@ def save_outputs(
     return report
 
 
-async def build_scene(scene_name: str, args: argparse.Namespace) -> dict:
+def build_scene(scene_name: str, args: argparse.Namespace, app) -> dict:
     scene_dir = Path(args.scene_root).expanduser().resolve() / scene_name
     if not scene_dir.is_dir():
         raise FileNotFoundError(scene_dir)
@@ -296,8 +382,8 @@ async def build_scene(scene_name: str, args: argparse.Namespace) -> dict:
         f"[DynBench OMap] scene={scene_name} usd={usd_path} "
         f"bounds={lower.tolist()}..{upper.tolist()}", flush=True,
     )
-    free, min_bound, max_bound = await generate_physx_map(
-        usd_path, lower, upper, args
+    free, min_bound, max_bound = generate_physx_map(
+        usd_path, lower, upper, args, app
     )
     report = save_outputs(
         scene_name, usd_path, free, min_bound, max_bound, episodes, args
@@ -317,8 +403,10 @@ def main() -> None:
     args = parse_args()
     if args.resolution <= 0 or args.padding < 0:
         raise ValueError("resolution must be positive and padding non-negative")
-    if not args.min_height < args.max_height:
-        raise ValueError("min-height must be smaller than max-height")
+    if not args.min_height <= args.max_height:
+        raise ValueError("min-height cannot exceed max-height")
+    if args.height_step <= 0.0:
+        raise ValueError("height-step must be positive")
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(args.gpu_id))
     from isaacsim import SimulationApp
 
@@ -326,7 +414,7 @@ def main() -> None:
     try:
         scenes = args.scenes or list(SCENE_USD_NAMES)
         for scene in scenes:
-            asyncio.get_event_loop().run_until_complete(build_scene(scene, args))
+            build_scene(scene, args, app)
     finally:
         app.close()
 
