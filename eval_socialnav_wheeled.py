@@ -119,7 +119,12 @@ mpc = None
 MODE_DEBUG_ALGOS = {"flux_explicit_modes_rule16", "flux_direction5_speed3_rule16",
                     "flux_predicted_prototype_rule16", "flux_gt_factorized_rule16",
                     "flux_direction5_speed3_rule15", "flux_gt_factorized_rule15",
-                    "flux_gt_factorized_rule15_continuity"}
+                    "flux_gt_factorized_rule15_continuity",
+                    "flux_k5_epoch5_prior_argmax"}
+
+SEMANTIC5_MODE_NAMES = (
+    "straight", "left_turn", "right_turn", "left_detour", "right_detour",
+)
 
 
 def _number(value, signed=False):
@@ -134,6 +139,50 @@ def _number(value, signed=False):
 
 def draw_mode_debug_panel(image, debug):
     """Append the explicit-mode candidate selection table."""
+    prior = np.asarray(
+        debug.get("mode_prior_all", []) if isinstance(debug, dict) else [],
+        dtype=np.float32,
+    ).reshape(-1)
+    if prior.size:
+        selected_mode = int(debug.get("selected_mode", int(np.argmax(prior))))
+        names = debug.get("mode_names", [])
+        if len(names) != len(prior):
+            names = [f"mode_{index}" for index in range(len(prior))]
+        panel = np.full((image.shape[0], 520, 3), (18, 22, 28), dtype=np.uint8)
+        cv2.putText(
+            panel, "MODE PRIOR: argmax-conditioned generation", (12, 28),
+            cv2.FONT_HERSHEY_SIMPLEX, .55, (255, 255, 255), 1, cv2.LINE_AA,
+        )
+        cv2.putText(
+            panel, f"selected: m{selected_mode} {names[selected_mode]}", (12, 55),
+            cv2.FONT_HERSHEY_SIMPLEX, .46, (20, 220, 255), 1, cv2.LINE_AA,
+        )
+        bar_x0, bar_x1 = 205, 455
+        for index, (name, probability) in enumerate(zip(names, prior)):
+            y = 92 + index * 48
+            selected = index == selected_mode
+            color = (20, 220, 255) if selected else (210, 215, 220)
+            cv2.putText(
+                panel, f"m{index} {name}", (12, y),
+                cv2.FONT_HERSHEY_SIMPLEX, .43, color, 1, cv2.LINE_AA,
+            )
+            cv2.rectangle(panel, (bar_x0, y - 16), (bar_x1, y + 4),
+                          (70, 75, 82), -1)
+            fill_x = bar_x0 + int(round(
+                np.clip(float(probability), 0.0, 1.0) * (bar_x1 - bar_x0)
+            ))
+            cv2.rectangle(panel, (bar_x0, y - 16), (fill_x, y + 4), color, -1)
+            cv2.putText(
+                panel, f"{100.0 * float(probability):5.1f}%", (bar_x1 + 8, y),
+                cv2.FONT_HERSHEY_SIMPLEX, .40, color, 1, cv2.LINE_AA,
+            )
+        cv2.putText(
+            panel, "one stochastic trajectory sampled from selected mode",
+            (12, min(image.shape[0] - 18, 360)),
+            cv2.FONT_HERSHEY_SIMPLEX, .40, (170, 180, 190), 1, cv2.LINE_AA,
+        )
+        return np.concatenate((image, panel), axis=1)
+
     rows = debug.get("candidate_debug", []) if isinstance(debug, dict) else []
     panel = np.full((image.shape[0], 520, 3), (18, 22, 28), dtype=np.uint8)
     cv2.putText(panel, "MODE SELECT: unified cost + argmin",
@@ -473,6 +522,23 @@ def planning_thread(env, camera_intrinsic):
                 goal, image, depth, port=args_cli.port, return_debug=True
             )
             mode_debug = debug_payload.get("selector_diagnostics")
+            mode_prior = np.asarray(debug_payload.get("mode_prior", []), dtype=np.float32)
+            mode_ids = np.asarray(debug_payload.get("mode_ids", []), dtype=np.int64)
+            if mode_debug and mode_prior.ndim == 2:
+                enriched_debug = []
+                for debug_index, diagnostic in enumerate(mode_debug):
+                    item = copy.deepcopy(diagnostic)
+                    if debug_index < len(mode_prior):
+                        item["mode_prior_all"] = mode_prior[debug_index].tolist()
+                        item["mode_names"] = (
+                            list(SEMANTIC5_MODE_NAMES)
+                            if mode_prior.shape[1] == len(SEMANTIC5_MODE_NAMES)
+                            else [f"mode_{index}" for index in range(mode_prior.shape[1])]
+                        )
+                    if mode_ids.ndim == 2 and debug_index < len(mode_ids):
+                        item["selected_mode"] = int(mode_ids[debug_index, 0])
+                    enriched_debug.append(item)
+                mode_debug = enriched_debug
 
             batch_optimal_points_world = []
             for idx in range(trajectory_points_camera.shape[0]):
