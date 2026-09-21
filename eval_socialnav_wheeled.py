@@ -121,6 +121,7 @@ MODE_DEBUG_ALGOS = {"flux_explicit_modes_rule16", "flux_direction5_speed3_rule16
                     "flux_direction5_speed3_rule15", "flux_gt_factorized_rule15",
                     "flux_gt_factorized_rule15_continuity",
                     "flux_k5_epoch5_prior_argmax",
+                    "flux_k5_epoch5_multimode_cost5",
                     "flux_k16_epoch7_prior_argmax"}
 
 SEMANTIC5_MODE_NAMES = (
@@ -177,11 +178,46 @@ def draw_mode_debug_panel(image, debug):
                 panel, f"{100.0 * float(probability):5.1f}%", (bar_x1 + 8, y),
                 cv2.FONT_HERSHEY_SIMPLEX, .40, color, 1, cv2.LINE_AA,
             )
+        footer = (
+            "one stochastic trajectory sampled from selected mode"
+            if debug.get("selection") == "prior_argmax"
+            else "one stochastic trajectory per mode; minimum total cost selected"
+        )
         cv2.putText(
-            panel, "one stochastic trajectory sampled from selected mode",
+            panel, footer,
             (12, min(image.shape[0] - 18, 360)),
             cv2.FONT_HERSHEY_SIMPLEX, .40, (170, 180, 190), 1, cv2.LINE_AA,
         )
+        rows = debug.get("candidate_debug", [])
+        if len(prior) <= 5 and rows:
+            table_y = 365
+            cv2.putText(
+                panel, "CANDIDATE COST SELECTION", (12, table_y),
+                cv2.FONT_HERSHEY_SIMPLEX, .46, (255, 255, 255), 1,
+                cv2.LINE_AA,
+            )
+            columns = ((12, "mode"), (82, "goal"), (158, "clear"),
+                       (244, "cont"), (326, "total"), (410, "state"))
+            for x, label in columns:
+                cv2.putText(panel, label, (x, table_y + 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, .34,
+                            (175, 185, 195), 1, cv2.LINE_AA)
+            for line, row in enumerate(rows):
+                y = table_y + 51 + line * 27
+                selected = bool(row.get("selected"))
+                color = (20, 220, 255) if selected else (210, 215, 220)
+                values = (
+                    (12, f"m{int(row.get('mode', -1))}"),
+                    (82, _number(row.get("goal_cost"))),
+                    (158, _number(row.get("clearance_cost"))),
+                    (244, _number(row.get("continuity_cost"))),
+                    (326, _number(row.get("final_cost"))),
+                    (410, "SELECT" if selected else ""),
+                )
+                for x, value in values:
+                    cv2.putText(panel, value, (x, y),
+                                cv2.FONT_HERSHEY_SIMPLEX, .34, color, 1,
+                                cv2.LINE_AA)
         return np.concatenate((image, panel), axis=1)
 
     rows = debug.get("candidate_debug", []) if isinstance(debug, dict) else []
