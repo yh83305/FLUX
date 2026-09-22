@@ -122,6 +122,8 @@ MODE_DEBUG_ALGOS = {"flux_explicit_modes_rule16", "flux_direction5_speed3_rule16
                     "flux_gt_factorized_rule15_continuity",
                     "flux_k5_epoch5_prior_argmax",
                     "flux_k5_grpo_prior_argmax",
+                    "flux_k5_sft_argmax_safety16",
+                    "flux_k5_grpo_argmax_safety16",
                     "flux_k5_epoch5_multimode_cost5",
                     "flux_k16_epoch7_prior_argmax"}
 
