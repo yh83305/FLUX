@@ -1,6 +1,5 @@
 import isaaclab.sim as sim_utils
 import json
-import math
 import weakref
 from pathlib import Path
 import torch
@@ -12,6 +11,7 @@ from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.sensors import Camera, ContactSensorCfg, patterns, CameraCfg, RayCasterCfg, OffsetCfg
 from isaaclab.utils import configclass
+from camera_geometry import horizontal_aperture, level_follow_camera_pose
 
 FLUX_ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,8 +50,8 @@ CAMERA_PROFILE_ID = "world060_pitch0_hfov69_v1"
 CAMERA_HEIGHT_M = 0.60
 CAMERA_HORIZONTAL_FOV_DEGREES = 69.0
 CAMERA_FOCAL_LENGTH = 1.4
-CAMERA_HORIZONTAL_APERTURE = 2.0 * CAMERA_FOCAL_LENGTH * math.tan(
-    math.radians(CAMERA_HORIZONTAL_FOV_DEGREES) / 2.0
+CAMERA_HORIZONTAL_APERTURE = horizontal_aperture(
+    CAMERA_FOCAL_LENGTH, CAMERA_HORIZONTAL_FOV_DEGREES
 )
 DINGO_CAMERA_TRANS = [0.0,0.0,CAMERA_HEIGHT_M]
 DINGO_CAMERA_ROTS = [0.5, -0.5, 0.5, -0.5]
@@ -62,23 +62,6 @@ DINGO_ContactCfg = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/%s"%DINGO_BA
                                     history_length=10, 
                                     track_air_time=True,
                                     update_period=0.02)
-
-
-def level_follow_camera_pose(root_transforms_xyzw, ground_z, height=CAMERA_HEIGHT_M):
-    """Follow robot XY/yaw while discarding chassis height, roll, pitch and USD scale."""
-    roots = torch.as_tensor(root_transforms_xyzw)
-    if roots.ndim != 2 or roots.shape[1] != 7 or not bool(torch.isfinite(roots).all()):
-        raise ValueError("Robot transforms must be finite [N,7] XYZW poses")
-    x, y, z, w = roots[:, 3:].unbind(-1)
-    yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-    positions = roots[:, :3].clone()
-    positions[:, 2] = torch.as_tensor(
-        ground_z, device=roots.device, dtype=roots.dtype
-    ) + float(height)
-    orientations = torch.zeros((len(roots), 4), device=roots.device, dtype=roots.dtype)
-    orientations[:, 0] = torch.cos(yaw / 2)
-    orientations[:, 3] = torch.sin(yaw / 2)
-    return positions, orientations
 
 
 class DingoLevelFollowCamera(Camera):
@@ -137,7 +120,7 @@ class DingoLevelFollowCamera(Camera):
         position, orientation = level_follow_camera_pose(
             self._follow_root.get_root_transforms(),
             self._ground_z,
-            self.cfg.world_height_m,
+            height=self.cfg.world_height_m,
         )
         self.set_world_poses(position, orientation, convention="world")
 
