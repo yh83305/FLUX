@@ -810,6 +810,17 @@ def main():
     if not save_dir.endswith(os.sep):
         save_dir += os.sep
     os.makedirs(save_dir, exist_ok=True)
+    camera_sensor = env.unwrapped.scene.sensors["camera_sensor"]
+    camera_profile = camera_sensor.profile_report()
+    camera_profile.update({
+        "scene": scene_name,
+        "scene_scale": float(args_cli.scene_scale),
+        "evaluator": "eval_socialnav_wheeled.py",
+    })
+    with open(os.path.join(save_dir, "camera_profile.json"), "w", encoding="utf-8") as handle:
+        json.dump(camera_profile, handle, indent=2)
+    print(f"[CameraProfile] wrote {save_dir}camera_profile.json", flush=True)
+
 
     euclidean = np.sqrt(np.square(infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]).sum(axis=-1))
     deferred_mode_render = algo in MODE_DEBUG_ALGOS
