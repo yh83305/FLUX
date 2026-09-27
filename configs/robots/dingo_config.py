@@ -162,6 +162,9 @@ class DingoLevelFollowCamera(Camera):
 @configclass
 class DingoLevelFollowCameraCfg(CameraCfg):
     class_type: type = DingoLevelFollowCamera
+    # Newer IsaacLab versions otherwise report the initialization pose even
+    # after the policy camera has followed the moving robot before rendering.
+    update_latest_camera_pose: bool = True
     world_height_m: float = CAMERA_HEIGHT_M
     profile_id: str = CAMERA_PROFILE_ID
 
