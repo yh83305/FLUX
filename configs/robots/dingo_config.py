@@ -1,5 +1,7 @@
 import isaaclab.sim as sim_utils
 from pathlib import Path
+from .level_follow_camera import LevelFollowCameraCfg
+from camera_profile import CAMERA_HEIGHT_M, HORIZONTAL_APERTURE
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
@@ -38,7 +40,7 @@ DINGO_WHEEL_JOINTS = ["left_wheel_joint","right_wheel_joint"]
 DINGO_WHEEL_RADIUS = 0.0591
 DINGO_WHEEL_BASE = 0.22616
 DINGO_THRESHOLD = 15.0
-DINGO_CAMERA_TRANS = [0.0,0.0,0.3]
+DINGO_CAMERA_TRANS = [0.0,0.0,CAMERA_HEIGHT_M]
 DINGO_CAMERA_ROTS = [0.5, -0.5, 0.5, -0.5]
 DINGO_IMAGEGOAL_TRANS = [5.0,0.0,0.3]
 DINGO_IMAGEGOAL_ROTS = [0.5, -0.5, 0.5, -0.5]
@@ -48,16 +50,16 @@ DINGO_ContactCfg = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/%s"%DINGO_BA
                                     track_air_time=True,
                                     update_period=0.02)
 
-DINGO_CameraCfg = CameraCfg(
-    prim_path="{ENV_REGEX_NS}/Robot/%s/front_cam"%DINGO_BASE_LINK,
+DINGO_CameraCfg = LevelFollowCameraCfg(
+    prim_path="{ENV_REGEX_NS}/policy_camera",
     update_period=0.05,
     height=360,
     width=640,
     data_types=["rgb", "distance_to_image_plane"],
     spawn=sim_utils.PinholeCameraCfg(
-        focal_length=1.4, focus_distance=0.205, horizontal_aperture=1.88, clipping_range=(0.01, 100.0)
+        focal_length=1.4, focus_distance=0.205, horizontal_aperture=HORIZONTAL_APERTURE, clipping_range=(0.01, 100.0)
     ),
-    offset=CameraCfg.OffsetCfg(pos=DINGO_CAMERA_TRANS, rot=DINGO_CAMERA_ROTS, convention="ros"),
+    offset=CameraCfg.OffsetCfg(pos=DINGO_CAMERA_TRANS, rot=(1.,0.,0.,0.), convention="world"),
 )
 
 DINGO_ImageGoal_CameraCfg = CameraCfg(
