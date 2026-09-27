@@ -269,6 +269,17 @@ def main():
     current_episode_idx = 0
     save_dir = "./metrics/socialgoal_%s_%s/%s/" % (algo, args_cli.scene_dir.split("/")[-1], scene_path.split("/")[-2])
     os.makedirs(save_dir, exist_ok=True)
+    camera_sensor = env.unwrapped.scene.sensors["camera_sensor"]
+    camera_profile = camera_sensor.profile_report()
+    camera_profile.update({
+        "scene": scene_name,
+        "scene_scale": float(args_cli.scene_scale),
+        "evaluator": "eval_socialnav_wheeled.py",
+    })
+    with open(os.path.join(save_dir, "camera_profile.json"), "w", encoding="utf-8") as handle:
+        json.dump(camera_profile, handle, indent=2)
+    print(f"[CameraProfile] wrote {save_dir}camera_profile.json", flush=True)
+
 
     euclidean = np.sqrt(np.square(infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]).sum(axis=-1))
     fps_writer = [imageio.get_writer(save_dir + "fps_%d.mp4" % i, fps=10) for i in range(scene_config.num_envs)]
