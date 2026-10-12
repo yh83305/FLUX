@@ -112,6 +112,7 @@ planning_input.episode_generation = 0
 planning_output.episode_generation = -1
 input_lock = threading.Lock()
 output_lock = threading.Lock()
+request_lock = threading.Lock()
 stop_event = threading.Event()
 vis_manager = [VisualizationManager(history_size=5) for i in range(args_cli.num_envs)]
 mpc = None
@@ -415,7 +416,8 @@ def refresh_camera_after_reset(env, simulation_app, update_count=2):
     """Render, refresh camera buffers, and recompute reset observations."""
     camera = env.unwrapped.scene.sensors["camera_sensor"]
     for _ in range(int(update_count)):
-        simulation_app.update()
+        camera.synchronize_pose()
+        env.unwrapped.sim.render()
     camera.update(env.unwrapped.step_dt, force_recompute=True)
     # Materialize annotator outputs now so the first recorded frame cannot
     # reuse RGB/depth from the terminal pose of the previous episode.
@@ -469,9 +471,14 @@ def planning_thread(env, camera_intrinsic):
             with output_lock:
                 planning_output.is_planning = True
 
-            trajectory_points_camera, all_trajectories_camera, all_values_camera, debug_payload = pointgoal_step(
-                goal, image, depth, port=args_cli.port, return_debug=True
-            )
+            with request_lock:
+                with input_lock:
+                    if (planning_input.current_image is None or
+                            planning_input.episode_generation != episode_generation):
+                        continue
+                trajectory_points_camera, all_trajectories_camera, all_values_camera, debug_payload = pointgoal_step(
+                    goal, image, depth, port=args_cli.port, return_debug=True
+                )
             mode_debug = debug_payload.get("selector_diagnostics")
 
             batch_optimal_points_world = []
@@ -488,7 +495,7 @@ def planning_thread(env, camera_intrinsic):
                 mpc_class = (
                     ModeMPCController if mode_debug else MPC_Controller
                 )
-                mpc = mpc_class(
+                candidate_mpc = mpc_class(
                     trajectory_points_world,
                     desired_v=args_cli.speed,
                     v_max=args_cli.speed,
@@ -519,6 +526,7 @@ def planning_thread(env, camera_intrinsic):
                 )
                 with output_lock:
                     if generation_is_current:
+                        planning_output.mpc = candidate_mpc
                         planning_output.trajectory_points_world = batch_optimal_points_world
                         planning_output.all_trajectories_world = batch_all_points_world
                         planning_output.all_trajectories_camera = all_trajectories_camera.copy()
@@ -857,12 +865,14 @@ def main():
                 current_mode_debug = None
                 current_plan_revision = -1
                 current_snapshot = None
+                current_mpc = None
                 with output_lock:
                     if (
                         planning_output.trajectory_points_world is not None
                         and planning_output.episode_generation == current_episode_idx
                     ):
                         current_trajectory = planning_output.trajectory_points_world.copy()
+                        current_mpc = planning_output.mpc
                         current_all_trajectories = planning_output.all_trajectories_world.copy()
                         current_all_values = planning_output.all_values_camera.copy()
                         current_all_trajectories_camera = planning_output.all_trajectories_camera.copy()
@@ -961,9 +971,9 @@ def main():
                                     })
                                 cached_mode_revision[i] = current_plan_revision
 
-                        if mpc is None:
+                        if current_mpc is None:
                             continue
-                        opt_u_controls, opt_x_states = mpc.solve(x0[i, :3])
+                        opt_u_controls, opt_x_states = current_mpc.solve(x0[i, :3])
                         v, w = opt_u_controls[1, 0], opt_u_controls[1, 1]
                         action = torch.tensor([v, w], device="cuda:0")
                         action_cpu = action.cpu().numpy()
@@ -1046,7 +1056,19 @@ def main():
                 for i in range(args_cli.num_envs):
                     if dones[i] == True:
                         episode_num += 1
-                        navigator_reset(env_id=i, port=args_cli.port)
+                        # Invalidate input before waiting for the outstanding RPC.
+                        # No old observation may refill server history after reset.
+                        with input_lock:
+                            planning_input.episode_generation = -1
+                            planning_input.current_image = None
+                            planning_input.current_depth = None
+                            planning_input.current_goal = None
+                            with output_lock:
+                                planning_output.trajectory_points_world = None
+                                planning_output.mpc = None
+                                planning_output.episode_generation = -1
+                        with request_lock:
+                            navigator_reset(env_id=i, port=args_cli.port)
                         success_flag = float(np.sqrt(np.square(goals[i]).sum()) < 1.5)
                         spl = np.clip(euclidean[i] / max(trajectory_length[i], 0.01), 0, 1) * success_flag
 
