@@ -37,6 +37,7 @@ import os
 import json
 import glob
 from configs.scenes import SocialNavSceneCfg, DynPointGoalSceneCfg, DynExploreSceneCfg
+from configs.tasks.stuck_detection import pose_window_is_stuck
 from scipy.spatial.transform import Rotation as R
 
 reset_counter = 0
@@ -87,17 +88,36 @@ def pixel_projection_data(env: ManagerBasedEnv,
 def stuck_terminal_check(env: ManagerBasedEnv,
                          robot_asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
                          window_size: int = 10,
-                         threshold: float = 0.05):
-    if not hasattr(env, '_recent_positions'):
+                         threshold: float = 0.05,
+                         theta_threshold: float = 0.1):
+    raw_step_id = getattr(env, "common_step_counter", None)
+    step_id = None if raw_step_id is None else int(raw_step_id)
+    recent = getattr(env, "_recent_positions", None)
+    if (
+        recent is not None
+        and len(recent) > 0
+        and step_id is not None
+        and getattr(env, "_stuck_last_update_step", None) == step_id
+    ):
+        return bool(getattr(env, "_stuck_cached_result", False))
+    if recent is None or recent.maxlen != window_size:
         env._recent_positions = deque(maxlen=window_size)
     robot_asset = env.scene[robot_asset_cfg.name]
-    pos = robot_asset.data.root_pos_w[0, :2].cpu().numpy()  # 只看x, y
-    env._recent_positions.append(pos)
+    pos = robot_asset.data.root_pos_w[0, :2].detach().cpu().numpy()
+    rotation = math_utils.matrix_from_quat(robot_asset.data.root_quat_w)[0]
+    theta = torch.atan2(rotation[1, 0], rotation[0, 0]).item()
+    env._recent_positions.append(np.array([pos[0], pos[1], theta]))
     if len(env._recent_positions) < window_size:
-        return False 
-    current = env._recent_positions[-1]
-    max_dist = max(np.linalg.norm(current - np.array(p)) for p in list(env._recent_positions)[:-1])
-    return bool(max_dist < threshold)
+        result = False
+    else:
+        result = pose_window_is_stuck(
+            env._recent_positions,
+            translation_threshold=threshold,
+            heading_threshold=theta_threshold,
+        )
+    env._stuck_last_update_step = step_id
+    env._stuck_cached_result = result
+    return result
 
 def arrival_terminal_check(env: ManagerBasedEnv,
                            robot_asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")):
