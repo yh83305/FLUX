@@ -10,7 +10,7 @@ def install_guard(robot_states, log_path, horizontal_fov_deg=69.):
     log=open(log_path,'a',buffering=1)
     def update(self,current_time,delta_time):
         if self.character is None:return original(self,current_time,delta_time)
-        key=str(self.prim_path);p=np.asarray(self.get_current_position(),dtype=float)[:2]
+        key=str(self.prim_path);p=np.asarray(self.get_current_position(),dtype=float)[:2].copy()
         previous=state.get(key)
         v=np.zeros(2)
         if previous and current_time>previous[0]:
