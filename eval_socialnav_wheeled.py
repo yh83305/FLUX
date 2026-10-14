@@ -27,6 +27,7 @@ parser.add_argument("--port", type=int, default=9999, help="NavDP server port")
 parser.add_argument("--gpu_id", type=int, default=0, help="CUDA device id when not using multi-GPU")
 parser.add_argument("--output_dir", type=str, default=None,
                     help="Optional directory for videos and metrics")
+parser.add_argument('--disable_offscreen_guard', action='store_true', help='Disable environment-side yielding for offscreen approaching pedestrians')
 args_cli = parser.parse_args()
 
 import os
@@ -712,6 +713,19 @@ def main():
     if not save_dir.endswith(os.sep):
         save_dir += os.sep
     os.makedirs(save_dir, exist_ok=True)
+    guard_reset = guard_close = lambda: None
+    if not args_cli.disable_offscreen_guard:
+        from offscreen_people_runtime import install_guard
+        def guard_robot_states():
+            sensor = env.unwrapped.scene.sensors['camera_sensor']
+            positions = sensor.data.pos_w.cpu().numpy()
+            quats = sensor.data.quat_w_world.cpu().numpy()
+            rotations = R.from_quat(quats[:, [1, 2, 3, 0]]).as_matrix()
+            robot = env.unwrapped.scene['robot'].data.root_pos_w.cpu().numpy()
+            return [(robot[j, :2], positions[j, :2], np.arctan2(rotations[j, 1, 0], rotations[j, 0, 0])) for j in range(len(robot))]
+        guard_reset, guard_close = install_guard(guard_robot_states, os.path.join(save_dir, 'offscreen_guard.jsonl'))
+    with open(os.path.join(save_dir, 'offscreen_guard_config.json'), 'w') as handle:
+        json.dump(dict(enabled=not args_cli.disable_offscreen_guard, visibility='horizontal FOV with body radius; no occlusion test', hfov_deg=69, clearance_m=.8, horizon_s=1., mechanism='pause approaching offscreen pedestrian, not robot'), handle)
     camera_sensor = env.unwrapped.scene.sensors["camera_sensor"]
     camera_profile = camera_sensor.profile_report()
     camera_profile.update({
@@ -1055,6 +1069,7 @@ def main():
 
                 for i in range(args_cli.num_envs):
                     if dones[i] == True:
+                        guard_reset()
                         episode_num += 1
                         # Invalidate input before waiting for the outstanding RPC.
                         # No old observation may refill server history after reset.
@@ -1254,6 +1269,7 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
+        if 'guard_close' in locals(): guard_close()
         cleanup_simulation(
             env=env if 'env' in locals() else None,
             simulation_app=simulation_app if 'simulation_app' in locals() else None,
