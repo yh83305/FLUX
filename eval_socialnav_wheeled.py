@@ -28,6 +28,7 @@ parser.add_argument("--gpu_id", type=int, default=0, help="CUDA device id when n
 parser.add_argument("--output_dir", type=str, default=None,
                     help="Optional directory for videos and metrics")
 parser.add_argument('--disable_offscreen_guard', action='store_true', help='Disable environment-side yielding for offscreen approaching pedestrians')
+parser.add_argument('--terminate-on-pedestrian-collision', action=argparse.BooleanOptionalAction, default=True)
 args_cli = parser.parse_args()
 
 import os
@@ -616,6 +617,10 @@ def main():
         'light_enabled': False
     }
 
+    if args_cli.terminate_on_pedestrian_collision:
+        from isaaclab.managers import TerminationTermCfg
+        from collision_termination import pedestrian_collision
+        env_config.terminations.pedestrian_collision = TerminationTermCfg(func=pedestrian_collision, time_out=False)
     env = ManagerBasedRLEnv(env_config)
     env = RslRlVecEnvWrapper(env)
     adjust_usd_scale(scale=args_cli.scene_scale)
@@ -729,6 +734,9 @@ def main():
     camera_sensor = env.unwrapped.scene.sensors["camera_sensor"]
     camera_profile = camera_sensor.profile_report()
     camera_profile.update({
+        "terminate_on_pedestrian_collision": args_cli.terminate_on_pedestrian_collision,
+        "collision_termination_threshold_m": 0.45,
+        "collision_termination_reference": "robot root xy to pedestrian center xy",
         "scene": scene_name,
         "scene_scale": float(args_cli.scene_scale),
         "evaluator": "eval_socialnav_wheeled.py",
@@ -1084,10 +1092,16 @@ def main():
                                 planning_output.episode_generation = -1
                         with request_lock:
                             navigator_reset(env_id=i, port=args_cli.port)
-                        success_flag = float(np.sqrt(np.square(goals[i]).sum()) < 1.5)
+                        collision_done = bool(getattr(env.unwrapped, '_bench_pedestrian_collision', [False] * args_cli.num_envs)[i]) if args_cli.terminate_on_pedestrian_collision else False
+                        from collision_termination import episode_success
+                        success_flag = episode_success(np.sqrt(np.square(goals[i]).sum()) < 1.5, collision_done)
                         spl = np.clip(euclidean[i] / max(trajectory_length[i], 0.01), 0, 1) * success_flag
 
                         social_metrics = social_metrics_trackers[i].get_metrics()
+                        if collision_done:
+                            social_metrics['collision'] = 1
+                            social_metrics['collision_count'] = max(1, social_metrics['collision_count'])
+                            social_metrics['min_distance'] = min(social_metrics['min_distance'],float(env.unwrapped._bench_terminal_person_distance[i]))
 
                         evaluation_metrics.append({
                             'episode': current_episode_idx,
