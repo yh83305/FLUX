@@ -1,4 +1,4 @@
-"""Run four baseline smoke episodes only after the current suite frees its GPUs."""
+"""Run configured model/scene smokes after the current suite frees its GPUs."""
 import argparse
 import concurrent.futures
 import csv

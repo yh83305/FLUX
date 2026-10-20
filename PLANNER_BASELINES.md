@@ -43,3 +43,11 @@ without changing the currently running benchmark.
 Each scene must yield metrics, an actual video, guard callbacks, and a cleanup
 marker. Failures produce closedloop_status.json with stage=failed; no full
 baseline suite is started automatically.
+
+For the unified three-scene preparation, set `scenes` to
+`["Full_Warehouse", "Hospital", "Office"]` and use the frozen evalset generated
+by `tools/prepare_three_scene_evalset.py`. Additional servers can specify
+`health_algorithm` and `required_health` for the alternate `algorithm` health
+schema. Per-GPU locks serialize models assigned to the same device.
+The recorded GRPO+rule server should retain its original checkpoint, candidate
+count, flow steps and selector config; only the shared evaluator is updated.
