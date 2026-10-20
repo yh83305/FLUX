@@ -52,7 +52,7 @@ class VIPlannerAgent():
         self.net.to(self.device)
 
     def process_depth(self, depth: torch.Tensor) -> torch.Tensor:
-        depth = self.transform(depth).expand(1, 3, -1, -1)
+        depth = self.transform(depth).expand(1, 3, -1, -1).clone()
         depth[depth > self.max_depth] = 0.0
         depth[~torch.isfinite(depth)] = 0  # set all inf or nan values to 0
         return depth
@@ -79,5 +79,4 @@ class VIPlannerAgent():
             keypoints, traj, fear = self.plan(tensor_dep_image, sem_image, tensor_goal_robot_frame)
             #print(keypoints.shape,traj.shape)
             return keypoints, traj, fear
-
 
