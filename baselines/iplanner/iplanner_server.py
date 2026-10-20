@@ -17,6 +17,8 @@ parser.add_argument("--config",type=str,default="./configs/iplanner.yaml")
 parser.add_argument("--checkpoint",type=str,default="./checkpoints/iplanner.pth")
 parser.add_argument("--device", default="cuda:0")
 parser.add_argument("--host", default="127.0.0.1")
+parser.add_argument("--record-input-video", action="store_true",
+                    help="Record input RGB only; this is not an evaluation video")
 parser.add_argument("--trusted-legacy-checkpoint", action="store_true",
                     help="Allow pickle loading ONLY for trusted legacy model-object checkpoints")
 args = parser.parse_known_args()[0]
@@ -43,15 +45,13 @@ def iplanner_reset():
                                            model_config_path=args.config,
                                            device=args.device,
                                            trusted_legacy_checkpoint=args.trusted_legacy_checkpoint)
-    if iplanner_fps_writer is None:
-        format_time = datetime.datetime.fromtimestamp(time.time())
-        format_time = format_time.strftime("%Y-%m-%d %H:%M:%S")
-        iplanner_fps_writer = imageio.get_writer("{}_fps_pointgoal.mp4".format(format_time),fps=7)
-    else:
+    if iplanner_fps_writer is not None:
         iplanner_fps_writer.close()
-        format_time = datetime.datetime.fromtimestamp(time.time())
-        format_time = format_time.strftime("%Y-%m-%d %H:%M:%S")
-        iplanner_fps_writer = imageio.get_writer("{}_fps_pointgoal.mp4".format(format_time),fps=7)
+        iplanner_fps_writer = None
+    if args.record_input_video:
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        iplanner_fps_writer = imageio.get_writer(f"{stamp}_input_rgb_debug.mp4",
+                                               fps=7, macro_block_size=1)
     return jsonify({"algo":"iplanner"})
 
 @app.route("/navigator_reset_env",methods=['POST'])
@@ -87,7 +87,8 @@ def iplanner_step_pointgoal():
     depth = depth.reshape((batch_size, -1, depth.shape[1], 1))
 
     _,trajectory,fear = iplanner_navigator.step_pointgoal(depth,goal)
-    iplanner_fps_writer.append_data(image.reshape(-1,image.shape[2],3))
+    if iplanner_fps_writer is not None:
+        iplanner_fps_writer.append_data(image.reshape(-1,image.shape[2],3))
 
     return jsonify({'trajectory': trajectory.cpu().numpy().tolist(),
                     'all_trajectory': trajectory.cpu().numpy()[:,None,:,:].tolist(),
@@ -95,5 +96,4 @@ def iplanner_step_pointgoal():
 
 if __name__ == "__main__":
     app.run(host=args.host,port=args.port)
-
 
