@@ -1,0 +1,63 @@
+Continuous DynBench suite
+
+Entry point:
+  bash tools/supervise_continuous_suite.sh /absolute/deployment.json
+
+Deployment values are JSON: output, dataset, code_root, container, gpus,
+models (port, health_algorithm, server_command, required_health), scenes,
+episodes, wait_for_complete, allowed_resident_commands and provenance_files.
+
+Default protocol:
+  100 episodes per scene, all remaining IDs passed in ONE Isaac invocation.
+  One persistent model service per model across scenes.
+  One simulator per GPU; a worker takes the next model after finishing 300 ep.
+  Changing scene/model requires scene reload, completing an episode does not.
+  Speed .5m/s; default camera and repaired offscreen guard remain unchanged.
+
+Recovery:
+  Startup grace 600 seconds.
+  Every 5 seconds the evaluator atomically writes episode/step/plan revision.
+  Every 10 seconds the supervisor reconciles artifacts and checks progress.
+  Simulation or planning unchanged for 180 seconds -> recover.
+  Model health fails 3 consecutive probes -> recover.
+  Episode wall time exceeds 1800 seconds -> recover.
+  Fatal Python/CUDA log or unexpected process exit -> recover.
+  Recover by stopping ONLY that attempt, restarting its model service, then
+  resuming the first uncommitted episode. Backoff 10/20 seconds, third failure
+  opens a persistent circuit (retries.json), records ALERT.json and leaves
+  the model incomplete. Other model workers may continue.
+  Service startup itself retries at most 3 times.
+  Outer scheduler crash retries at most 3 times with 30-second delay.
+  Supervisor restart cleans exact orphan simulator output paths and only
+  server PIDs whose /proc start time and arguments match owned_server.json.
+
+Artifact acceptance:
+  Atomic metric.csv is committed after video writer close by the evaluator.
+  Require valid finite metrics, nonzero requests, video >1000 bytes,
+  camera metadata and actual guard bind/callback evidence.
+  Success=0 or collision=1 is a valid evaluation outcome, NOT infrastructure
+  failure; do not rerun such episodes to cherry-pick a better result.
+  Reject duplicate/non-contiguous episode IDs rather than silently skipping.
+  COMPLETE.json records the exact attempt directory and metric for each ID.
+  Model/scene/root COMPLETE markers require all expected artifacts.
+  Inspect status.json, retries.json, termination.json and ALERT.json; do not
+  use tmux existence as proof of completion.
+
+Pause:
+  Send TERM to the Python suite scheduler. It stops owned attempts/services,
+  records paused state and preserves committed episodes. No auto-resume.
+  Resume with the same config/entry point after resolving any circuit alert.
+  Do not remove retry records or change snapshots automatically.
+
+Limitations:
+  Scheduling and monitoring do not prove navigation quality.
+  A crash/hang inside a long-lived Isaac scene may require reloading that
+  scene. Plugin-unload residue is cleaned after complete artifacts.
+  One pending suite can wait for previous Office COMPLETE markers without
+  restarting or modifying those already-running code snapshots.
+  During that wait, configured legacy Office dependencies are watched too:
+  missing queue, 3 failed web-liveness probes, failed queue status or 30
+  minutes without an episode completion triggers exact-task recovery, at
+  most 3 times across supervisor restarts. The official legacy services have
+  no /health endpoint; their 404 response is web liveness only, NOT proof of
+  inference health. Episode completion supplies the separate progress check.

@@ -823,8 +823,22 @@ def main():
     plan_records = [list() for _ in range(args_cli.num_envs)]
 
     first_plan_wait_since = None
+    last_progress_write = 0.0
     try:
         while simulation_app.is_running():
+            if time.monotonic() - last_progress_write >= 5:
+                with output_lock:
+                    progress = dict(
+                        wall_time=time.time(), episode=int(current_episode_idx),
+                        step=int(episode_steps[0]),
+                        plan_revision=int(planning_output.plan_revision),
+                        planning_error=getattr(planning_output, "planning_error", None),
+                    )
+                progress_tmp = os.path.join(save_dir, "progress.json.tmp")
+                with open(progress_tmp, "w") as handle:
+                    json.dump(progress, handle)
+                os.replace(progress_tmp, os.path.join(save_dir, "progress.json"))
+                last_progress_write = time.monotonic()
             with torch.inference_mode():
                 goals = infos['observations']['goal_pose'].cpu().numpy()[:, 0:2]
                 images = infos['observations']['rgb'].cpu().numpy()[:, :, :, 0:3]
