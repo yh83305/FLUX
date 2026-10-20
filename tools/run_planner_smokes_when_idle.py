@@ -33,18 +33,25 @@ def state(stage, **fields):
 
 
 def ready():
-    current = Path(cfg["wait_for_run"])
-    if not all((current/m/"COMPLETE").exists() for m in ("navdp", "flux")):
-        return False
+    if cfg.get("wait_for_run"):
+        current = Path(cfg["wait_for_run"])
+        if not all((current/m/"COMPLETE").exists() for m in ("navdp", "flux")):
+            return False
     usage = subprocess.check_output(
-        ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"], text=True)
-    free = {int(line.split(",")[0]): int(line.split(",")[1]) for line in usage.splitlines()}
+        ["nvidia-smi", "--query-gpu=index,uuid,memory.free", "--format=csv,noheader,nounits"], text=True)
+    devices = [tuple(x.strip() for x in line.split(",")) for line in usage.splitlines()]
+    free = {int(index): int(memory) for index, uuid, memory in devices}
+    selected = {uuid for index, uuid, memory in devices
+                if int(index) in {m["gpu"] for m in cfg["models"].values()}}
     if any(free.get(m["gpu"], 0) < 18000 for m in cfg["models"].values()):
         return False
     # Do not start a second simulator alongside another user's workload.
     rows = subprocess.check_output(
-        ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"], text=True)
-    for pid in rows.splitlines():
+        ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid", "--format=csv,noheader,nounits"], text=True)
+    for line in rows.splitlines():
+        uuid, pid = (x.strip() for x in line.split(","))
+        if uuid not in selected:
+            continue
         cmd = subprocess.run(["ps", "-p", pid.strip(), "-o", "args="],
                              text=True, capture_output=True).stdout
         if cmd and not ("/baselines/" in cmd and
@@ -76,6 +83,7 @@ def worker(name, m):
 
 
 def worker_on_gpu(name, m):
+    state("running_model", model=name, gpu=m["gpu"])
     output = root/name/"closedloop"
     output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(m["gpu"]),
