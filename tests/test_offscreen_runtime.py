@@ -34,6 +34,7 @@ def test_callback_hold_release_cleanup(monkeypatch,tmp_path):
     try:
         for k in range(200):actor.on_update(k*.01,.01)
         assert actor.p[0]<-.8
+        assert actor.character.action == "None"
         steps=actor.steps;heading[0]=np.pi;actor.on_update(2.01,.01)
         assert actor.steps==steps+1
         events=[json.loads(x)['event'] for x in (tmp_path/'events.jsonl').read_text().splitlines()]

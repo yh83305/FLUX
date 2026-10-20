@@ -22,12 +22,18 @@ def install_guard(robot_states, log_path, horizontal_fov_deg=69.):
         v=np.zeros(2)
         if previous and current_time>previous[0]:
             v=previous[2] if previous[3] else (p-previous[1])/(current_time-previous[0])
-        hold=any(should_hold(p,v,robot,cam,yaw,config) for robot,cam,yaw in robot_states())
+        robots = robot_states()
+        hold=any(should_hold(p,v,robot,cam,yaw,config) for robot,cam,yaw in robots)
+        # Avoid releasing at the FOV edge while a paused actor is still nearby.
+        if previous and previous[3]:
+            hold = hold or any(np.linalg.norm(p-np.asarray(robot)[:2]) < 1.2
+                               for robot,cam,yaw in robots)
         if hold:
             if previous is None or not previous[3]:
                 counters["holds"] += 1
                 log.write(json.dumps(dict(time=current_time,person=key,event='hold',xy=p.tolist(),velocity=v.tolist()))+'\n')
-            self.character.set_variable('Action','Idle')
+            # omni.anim.people Idle.setup uses "None"; "Idle" is not its stop action.
+            self.character.set_variable('Action','None')
             state[key]=(current_time,p,v,True)
             if self.navigation_manager and self.avoidanceOn:self.navigation_manager.publish_character_positions(delta_time,.5)
             return
