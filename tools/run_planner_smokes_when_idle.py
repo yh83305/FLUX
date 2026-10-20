@@ -10,6 +10,7 @@ import re
 import signal
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -65,7 +66,16 @@ def stop_sim(folder):
     raise RuntimeError("Simulator did not stop: "+str(folder))
 
 
+gpu_locks = {m["gpu"]: threading.Lock() for m in cfg["models"].values()}
+
+
 def worker(name, m):
+    # More models than GPUs must never create concurrent simulators on one GPU.
+    with gpu_locks[m["gpu"]]:
+        return worker_on_gpu(name, m)
+
+
+def worker_on_gpu(name, m):
     output = root/name/"closedloop"
     output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(m["gpu"]),
@@ -84,13 +94,17 @@ def worker(name, m):
                     raise RuntimeError(name+" server exited")
                 try:
                     with urllib.request.urlopen(f'http://127.0.0.1:{m["port"]}/health', timeout=2) as response:
-                        assert json.load(response)["algo"] == name
+                        health = json.load(response)
+                        actual = health.get("algo", health.get("algorithm"))
+                        assert actual == m.get("health_algorithm", name), (name, actual)
+                        for key, expected in m.get("required_health", {}).items():
+                            assert health.get(key) == expected, (key, health.get(key), expected)
                     break
                 except OSError:
                     time.sleep(2)
             else:
                 raise RuntimeError(name+" server startup timeout")
-            for scene in ("Hospital", "Office"):
+            for scene in cfg.get("scenes", ["Hospital", "Office"]):
                 folder = output/scene
                 folder.mkdir(exist_ok=False)
                 cmd = ["docker", "exec", "-e", f'CUDA_VISIBLE_DEVICES={m["gpu"]}',
@@ -140,7 +154,8 @@ try:
     while not ready():
         state("waiting_for_existing_suite_and_free_gpus")
         time.sleep(30)
-    state("running_four_smoke_episodes")
+    state("running_smoke_episodes",
+          episodes=len(cfg["models"])*len(cfg.get("scenes", ["Hospital", "Office"])))
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = {name: pool.submit(worker, name, model) for name, model in cfg["models"].items()}
         results = {name: future.result() for name, future in futures.items()}
