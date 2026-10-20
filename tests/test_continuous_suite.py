@@ -46,6 +46,9 @@ def test_resume_only_complete_artifacts(tmp_path):
     done = module.reconcile(tmp_path, 100)
     assert module.next_missing(done, 100) == 1
     assert (tmp_path / "episode_000/COMPLETE.json").exists()
+    with (folder / "offscreen_guard.jsonl").open("a") as stream:
+        stream.write('{"event":"heartbeat","call')
+    assert module.next_missing(module.reconcile(tmp_path, 100), 100) == 1
     (folder / "fps_0.mp4").unlink()
     assert module.reconcile(tmp_path, 100) == {}
 

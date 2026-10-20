@@ -55,7 +55,14 @@ def accepted_rows(folder, count):
     folder = Path(folder)
     try:
         rows = list(csv.DictReader((folder / "metric.csv").open()))
-        events = [json.loads(s) for s in (folder / "offscreen_guard.jsonl").read_text().splitlines()]
+        events = []
+        for line in (folder / "offscreen_guard.jsonl").read_text().splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                # A crash during the next heartbeat must not erase already
+                # committed metrics/videos from preceding episodes.
+                continue
         guard = read_json(folder / "offscreen_guard_config.json", {})
         if not guard.get("enabled") or not any(e.get("event") == "bind" for e in events):
             return []
@@ -483,7 +490,11 @@ class Suite:
                                       for path in self.cfg.get("provenance_files", [])}
         for path, expected in self.cfg.get("required_sha256", {}).items():
             assert sha256(path) == expected, f"Changed pinned input: {path}"
-        atomic_json(self.root / "manifest.json", provenance)
+        existing = read_json(self.root / "manifest.json")
+        if existing is not None and existing != provenance:
+            raise RuntimeError("Run provenance changed; use a new output directory")
+        if existing is None:
+            atomic_json(self.root / "manifest.json", provenance)
         while not self.stop:
             pending = [p for p in self.cfg.get("wait_for_complete", []) if not Path(p).exists()]
             if not pending:
