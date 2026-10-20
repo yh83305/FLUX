@@ -746,7 +746,7 @@ def main():
             return [(robot[j, :2], positions[j, :2], np.arctan2(rotations[j, 1, 0], rotations[j, 0, 0])) for j in range(len(robot))]
         guard_reset, guard_close = install_guard(guard_robot_states, os.path.join(save_dir, 'offscreen_guard.jsonl'))
     with open(os.path.join(save_dir, 'offscreen_guard_config.json'), 'w') as handle:
-        json.dump(dict(enabled=not args_cli.disable_offscreen_guard, visibility='horizontal FOV with body radius; no occlusion test', hfov_deg=69, clearance_m=.8, horizon_s=1., mechanism='pause approaching offscreen pedestrian, not robot', runtime_binding='live Kit classes', stop_action='None', hold_release_distance_m=1.2), handle)
+        json.dump(dict(enabled=not args_cli.disable_offscreen_guard, visibility='horizontal FOV with body radius; no occlusion test', hfov_deg=69, clearance_m=.8, horizon_s=1., mechanism='pause approaching offscreen pedestrian, not robot', runtime_binding='live Kit classes', stop_mechanism='original update with command dt=0 and walk speed=0; no direct Action writes', hold_release_distance_m=2.0, minimum_hold_s=1.0), handle)
     camera_sensor = env.unwrapped.scene.sensors["camera_sensor"]
     camera_profile = camera_sensor.profile_report()
     camera_profile.update({

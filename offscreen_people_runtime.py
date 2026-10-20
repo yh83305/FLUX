@@ -9,7 +9,7 @@ def install_guard(robot_states, log_path, horizontal_fov_deg=69.):
     manager = ScriptManager.get_instance()
     originals = {}
     counters = dict(callbacks=0, holds=0, releases=0)
-    state={};config=GuardConfig(horizontal_fov_deg=horizontal_fov_deg)
+    state={};held_since={};config=GuardConfig(horizontal_fov_deg=horizontal_fov_deg)
     log=open(log_path,'a',buffering=1)
     def update(self,current_time,delta_time):
         original = originals[type(self)]
@@ -26,20 +26,25 @@ def install_guard(robot_states, log_path, horizontal_fov_deg=69.):
         hold=any(should_hold(p,v,robot,cam,yaw,config) for robot,cam,yaw in robots)
         # Avoid releasing at the FOV edge while a paused actor is still nearby.
         if previous and previous[3]:
-            hold = hold or any(np.linalg.norm(p-np.asarray(robot)[:2]) < 1.2
-                               for robot,cam,yaw in robots)
+            hold = (hold or current_time-held_since[key] < 1.0
+                    or any(np.linalg.norm(p-np.asarray(robot)[:2]) < 2.0
+                           for robot,cam,yaw in robots))
         if hold:
             if previous is None or not previous[3]:
+                held_since[key] = current_time
                 counters["holds"] += 1
                 log.write(json.dumps(dict(time=current_time,person=key,event='hold',xy=p.tolist(),velocity=v.tolist()))+'\n')
-            # omni.anim.people Idle.setup uses "None"; "Idle" is not its stop action.
-            self.character.set_variable('Action','None')
             state[key]=(current_time,p,v,True)
-            if self.navigation_manager and self.avoidanceOn:self.navigation_manager.publish_character_positions(delta_time,.5)
-            return
+            # Keep command/path bookkeeping alive. Freeze command time and
+            # let the official walk() publish Walk=0 without forcing an
+            # animation-state transition behind the active GoTo command.
+            command = getattr(self, "current_command", None)
+            if command is not None and hasattr(command, "actual_walk_speed"):
+                command.actual_walk_speed = 0.0
+                command.desired_walk_speed = 0.0
+            return original(self,current_time,0.0)
         if previous and previous[3]:
             counters["releases"] += 1
-            self.character.set_variable('Action','Walk')
             log.write(json.dumps(dict(time=current_time,person=key,event='release',xy=p.tolist()))+'\n')
         state[key]=(current_time,p,v,False)
         return original(self,current_time,delta_time)
@@ -58,6 +63,7 @@ def install_guard(robot_states, log_path, horizontal_fov_deg=69.):
     log.write(json.dumps(dict(event="installed", bound_classes=len(originals)))+"\n")
     def reset():
         state.clear()
+        held_since.clear()
         scan()
         log.write(json.dumps(dict(event="reset", **counters))+"\n")
     def close():

@@ -17,6 +17,14 @@ no occlusion test; approaching offscreen pedestrians pause. This is not a
 collision exemption, and does not prevent the robot driving into a stationary
 pedestrian. Old runs without verified binding must not be pooled with new runs.
 
+During a hold, preserve the official behavior update and path bookkeeping.
+Set the active command's actual/desired walk speeds to zero and call the original
+update with zero command delta time. Never force `Action=None/Walk` around an
+unfinished GoTo command. Release uses the original positive delta time and its
+normal speed blending. Holds last at least one second and persist within 2 m
+of a robot, preventing immediate FOV-edge release. These are explicit protocol
+parameters, recorded with each run.
+
 Run inside the established Isaac Sim 4.5 container using a new pinned checkout:
 
 ```

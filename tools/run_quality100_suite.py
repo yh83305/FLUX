@@ -18,6 +18,8 @@ p.add_argument("--port", required=True)
 p.add_argument("--container", required=True)
 p.add_argument("--evaluator", required=True)
 p.add_argument("--code-root", required=True, help="Pinned FLUX source path visible in container")
+p.add_argument("--progress-timeout", type=float, default=180.,
+               help="Stop if live simulation guard heartbeat stops advancing (seconds)")
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=True)
 lock = (a.output/"queue.lock").open("w")
@@ -89,8 +91,15 @@ try:
                     while proc.poll() is None:
                         time.sleep(5)
                         text = (out/"eval.log").read_text(errors="replace")
+                        heartbeat = out/"offscreen_guard.jsonl"
+                        stalled = (heartbeat.exists() and
+                                   time.time()-heartbeat.stat().st_mtime > a.progress_timeout)
+                        if stalled:
+                            status(state="simulation_stalled", scene=scene, episode=episode,
+                                   attempt=attempt, stalled_seconds=time.time()-heartbeat.stat().st_mtime)
                         if ("[INFO] Cleanup complete" in text or "fail to launch" in text
                                 or "Traceback (most recent call last)" in text
+                                or stalled
                                 or time.monotonic()-started > 1200):
                             break
                     stop(out)
