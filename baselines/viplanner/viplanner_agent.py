@@ -25,6 +25,7 @@ class VIPlannerAgent():
         self.m2f_inference = Mask2FormerInference(
             config_file=m2f_config_path,
             checkpoint_file=m2f_path,
+            device=self.device,
         )
         self.train_config: TrainCfg = None
         self.load_model(self.model_path, self.model_config_path)
@@ -44,10 +45,8 @@ class VIPlannerAgent():
             self.net = DualAutoEncoder(self.train_config)
         else:
             self.net = AutoEncoder(self.train_config.in_channel, self.train_config.knodes)
-        try:
-            model_state_dict, _ = torch.load(model_path, weights_only=True)
-        except ValueError:
-            model_state_dict = torch.load(model_path, weights_only=True)
+        payload = torch.load(model_path, map_location="cpu", weights_only=True)
+        model_state_dict = payload[0] if isinstance(payload, (tuple, list)) else payload
         self.net.load_state_dict(model_state_dict, strict=True)
         self.net.eval()
         self.net.to(self.device)
@@ -81,4 +80,4 @@ class VIPlannerAgent():
             #print(keypoints.shape,traj.shape)
             return keypoints, traj, fear
 
-    
+

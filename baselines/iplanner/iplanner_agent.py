@@ -13,11 +13,13 @@ class IPlannerAgent():
         model_path: str,
         model_config_path: str,
         device="cuda:0",
+        trusted_legacy_checkpoint=False,
     ):
         self.image_intrinsic = image_intrinsic
         self.model_path = model_path
         self.model_config_path = model_config_path
         self.device = device
+        self.trusted_legacy_checkpoint = trusted_legacy_checkpoint
         self.traj_generate = traj_opt.TrajOpt()
         self.load_model(self.model_path, self.model_config_path)
         self.transform = transforms.Resize(self.img_input_size, antialias=None)  # type: ignore
@@ -34,25 +36,27 @@ class IPlannerAgent():
         if math.hypot(self.sensor_offset_x, self.sensor_offset_y) > 1e-1:
             self.is_traj_shift = True
         self.net = PlannerNet(encoder_channel=16)
-        try:
-            model_state_dict, _ = torch.load(model_path, weights_only=True)
-        except ValueError:
-            model_state_dict = torch.load(model_path, weights_only=True)
+        payload = torch.load(model_path, map_location="cpu",
+                             weights_only=not self.trusted_legacy_checkpoint)
+        if isinstance(payload, (tuple, list)):
+            payload = payload[0]
+        if isinstance(payload, torch.nn.Module):
+            payload = payload.state_dict()
+        model_state_dict = payload
         self.net.load_state_dict(model_state_dict, strict=True)
         self.net.eval()
-        if torch.cuda.is_available():
-            self.net = self.net.cuda()
+        self.net = self.net.to(self.device)
 
     def process_depth(self, depth: torch.Tensor) -> torch.Tensor:
         depth = self.transform(depth).expand(1, 3, -1, -1)
         depth[depth > self.max_depth] = 0.0
         depth[~torch.isfinite(depth)] = 0  # set all inf or nan values to 0
         return depth
-    
+
     def process_image(self, image: torch.Tensor) -> np.ndarray:
         image_np = image.permute(0, 2, 3, 1).cpu().numpy()
         return image_np
-    
+
     def plan(self, image, goal_robot_frame):
         with torch.no_grad():
             keypoints, fear = self.net(self.process_depth(image), goal_robot_frame)

@@ -18,8 +18,9 @@ class Mask2FormerInference:
         self,
         config_file="configs/coco/panoptic-segmentation/maskformer2_R50_bs16_50ep.yaml",
         checkpoint_file="model_final.pth",
+        device="cuda:0",
     ) -> None:
-        self.model = init_detector(config_file, checkpoint_file, device="cuda:0")
+        self.model = init_detector(config_file, checkpoint_file, device=device)
         viplanner_meta = VIPlannerSemMetaHandler()
         coco_viplanner_cls_mapping = get_class_for_id_mmdet(self.model.dataset_meta["classes"])
         self.viplanner_sem_class_color_map = viplanner_meta.class_color

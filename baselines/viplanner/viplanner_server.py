@@ -17,11 +17,19 @@ parser.add_argument("--config",type=str,default="./configs/viplanner.yaml")
 parser.add_argument("--checkpoint",type=str,default="./checkpoints/viplanner.pt")
 parser.add_argument("--m2f_config",type=str,default="~/miniconda3/envs/habitat/lib/python3.9/site-packages/mmdet/.mim/configs/mask2former/mask2former_r50_8xb2-lsj-50e_coco-panoptic.py")
 parser.add_argument("--m2f_checkpoint",type=str,default="./checkpoints/mask2former_r50_8xb2-lsj-50e_coco-panoptic_20230118_125535-54df384a.pth")
+parser.add_argument("--device", default="cuda:0")
+parser.add_argument("--host", default="127.0.0.1")
 args = parser.parse_known_args()[0]
 
 app = Flask(__name__)
 viplanner_navigator = None
 viplanner_fps_writer = None
+
+@app.route("/health")
+def health():
+    return jsonify({"algo": "viplanner", "loaded": viplanner_navigator is not None,
+                    "device": args.device, "checkpoint": os.path.abspath(args.checkpoint),
+                    "segmentation_checkpoint": os.path.abspath(args.m2f_checkpoint)})
 
 @app.route("/navigator_reset",methods=['POST'])
 def iplanner_reset():
@@ -35,7 +43,7 @@ def iplanner_reset():
                                             m2f_config_path=args.m2f_config,
                                             model_path=args.checkpoint,
                                             model_config_path=args.config,
-                                            device='cuda:0')
+                                            device=args.device)
     if viplanner_fps_writer is None:
         format_time = datetime.datetime.fromtimestamp(time.time())
         format_time = format_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -66,27 +74,27 @@ def viplanner_step_pointgoal():
     goal = np.stack((goal_x,goal_y,np.zeros_like(goal_x)),axis=1)
     goal = process_goal(goal)
     batch_size = goal.shape[0]
-    
+
     image = Image.open(image_file.stream)
     image = image.convert('RGB')
     image = np.asarray(image)
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     image = image.reshape((batch_size, -1, image.shape[1], 3))
-    
+
     depth = Image.open(depth_file.stream)
     depth = depth.convert('I')
     depth = np.asarray(depth)[:,:,np.newaxis]
     depth = depth.astype(np.float32)/10000.0
     depth = depth.reshape((batch_size, -1, depth.shape[1], 1))
-    
+
     _,trajectory,fear = viplanner_navigator.step_pointgoal(image,depth,goal)
     viplanner_fps_writer.append_data(image.reshape(-1,image.shape[2],3))
-    
+
     return jsonify({'trajectory': trajectory.cpu().numpy().tolist(),
-                    'all_trajectory': trajectory.cpu().numpy()[None,:,:,:].tolist(),
+                    'all_trajectory': trajectory.cpu().numpy()[:,None,:,:].tolist(),
                     'all_values': fear.cpu().numpy().tolist()})
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0',port=args.port)
+    app.run(host=args.host,port=args.port)
 
-        
+
