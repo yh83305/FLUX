@@ -122,8 +122,13 @@ def worker_on_gpu(name, m):
                        cfg["code_root"]+"/runtime_fix/eval_render_safe.py",
                        "--port", str(m["port"]), "--gpu_id", "0", "--scene_dir",
                        cfg["dataset"]+"/scene_views/"+scene, "--scene_index", "0",
-                       "--num_envs", "1", "--num_episodes", "1", "--episode_start", "0",
+                       "--num_envs", "1", "--num_episodes", str(cfg.get("episodes", 1)),
+                       "--episode_start", str(cfg.get("episode_start", 0)),
+                       "--controller", cfg.get("controller", "native"),
                        "--speed", ".5", "--stop_threshold", "-3.0", "--output_dir", str(folder)]
+                if cfg.get("record_control_debug"):
+                    cmd.insert(-2, "--record-control-debug")
+                (folder/"command.json").write_text(json.dumps(cmd, indent=2))
                 with (folder/"eval.log").open("w") as eval_log:
                     proc = subprocess.Popen(cmd, stdout=eval_log, stderr=subprocess.STDOUT)
                     started = time.monotonic()
@@ -134,18 +139,21 @@ def worker_on_gpu(name, m):
                         stalled = heartbeat.exists() and time.time()-heartbeat.stat().st_mtime > 180
                         if ("[INFO] Cleanup complete" in text or "fail to launch" in text
                                 or "Traceback (most recent call last)" in text
-                                or stalled or time.monotonic()-started > 900):
+                                or stalled or time.monotonic()-started > cfg.get("wall_timeout", 900)):
                             break
                     stop_sim(folder)
                     proc.wait(timeout=20)
                 rows = list(csv.DictReader((folder/"metric.csv").open()))
-                assert len(rows) == 1 and int(rows[0]["episode"]) == 0
-                assert int(rows[0]["timing_requests"]) > 0
-                assert (folder/"fps_0.mp4").stat().st_size > 1000
+                first = cfg.get("episode_start", 0)
+                assert len(rows) == cfg.get("episodes", 1)
+                assert {int(row["episode"]) for row in rows} == set(range(first, first+len(rows)))
+                for row in rows:
+                    assert int(row["timing_requests"]) > 0
+                    assert (folder/f'fps_{int(row["episode"])}.mp4').stat().st_size > 1000
                 assert "[INFO] Cleanup complete" in (folder/"eval.log").read_text(errors="replace")
                 events = [json.loads(x) for x in (folder/"offscreen_guard.jsonl").read_text().splitlines()]
                 assert any(x.get("callbacks", 0) > 0 for x in events)
-                results.append(dict(scene=scene, metric=rows[0], passed=True))
+                results.extend(dict(scene=scene, metric=row, passed=True) for row in rows)
                 (output/"results.json").write_text(json.dumps(results, indent=2))
         finally:
             if server.poll() is None:
@@ -163,7 +171,7 @@ try:
         state("waiting_for_existing_suite_and_free_gpus")
         time.sleep(30)
     state("running_smoke_episodes",
-          episodes=len(cfg["models"])*len(cfg.get("scenes", ["Hospital", "Office"])))
+          episodes=len(cfg["models"])*len(cfg.get("scenes", ["Hospital", "Office"]))*cfg.get("episodes", 1))
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = {name: pool.submit(worker, name, model) for name, model in cfg["models"].items()}
         results = {name: future.result() for name, future in futures.items()}

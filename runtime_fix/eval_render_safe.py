@@ -29,6 +29,9 @@ parser.add_argument("--output_dir", type=str, default=None,
                     help="Optional directory for videos and metrics")
 parser.add_argument('--disable_offscreen_guard', action='store_true', help='Disable environment-side yielding for offscreen approaching pedestrians')
 parser.add_argument('--terminate-on-pedestrian-collision', action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument('--controller', choices=('native', 'lookahead'), default='native',
+                    help='native preserves per-policy routing; lookahead uses the same heading-aware MPC for all policies')
+parser.add_argument('--record-control-debug', action='store_true')
 args_cli = parser.parse_args()
 
 import os
@@ -509,7 +512,7 @@ def planning_thread(env, camera_intrinsic):
                 trajectory_points_world = np.array(trajectory_points_world)
                 batch_optimal_points_world.append(trajectory_points_world)
                 mpc_class = (
-                    ModeMPCController if mode_debug else MPC_Controller
+                    ModeMPCController if args_cli.controller == 'lookahead' or mode_debug else MPC_Controller
                 )
                 candidate_mpc = mpc_class(
                     trajectory_points_world,
@@ -734,6 +737,11 @@ def main():
     if not save_dir.endswith(os.sep):
         save_dir += os.sep
     os.makedirs(save_dir, exist_ok=True)
+    with open(os.path.join(save_dir, 'controller_config.json'), 'w') as handle:
+        json.dump(dict(selection=args_cli.controller, speed=args_cli.speed,
+                       native_routing='ModeMPCController for selector_diagnostics; MPC_Controller otherwise',
+                       lookahead_routing='ModeMPCController for all policies',
+                       record_control_debug=args_cli.record_control_debug), handle, indent=2)
     guard_reset = guard_close = lambda: None
     if not args_cli.disable_offscreen_guard:
         from offscreen_people_runtime import install_guard
@@ -1042,6 +1050,16 @@ def main():
                             continue
                         opt_u_controls, opt_x_states = current_mpc.solve(x0[i, :3])
                         v, w = opt_u_controls[1, 0], opt_u_controls[1, 1]
+                        if args_cli.record_control_debug and int(episode_steps[i]) % 5 == 0:
+                            with open(os.path.join(save_dir, 'control_debug.jsonl'), 'a') as handle:
+                                handle.write(json.dumps(dict(
+                                    episode=int(current_episode_idx), step=int(episode_steps[i]),
+                                    controller=type(current_mpc).__name__,
+                                    state=x0[i, :3].tolist(), goal_local=goals[i].tolist(),
+                                    command=[float(v), float(w)],
+                                    actual_speed=[float(robot_vel), float(robot_ang_vel)],
+                                    trajectory_world=current_trajectory[i].tolist(),
+                                )) + '\n')
                         action = torch.tensor([v, w], device="cuda:0")
                         action_cpu = action.cpu().numpy()
                         last_applied_commands[i] = action_cpu
