@@ -11,6 +11,14 @@ import traj_opt
 
 VISUALIZATION_IMAGE_SIZE = (160, 120)
 IMAGE_ASPECT_RATIO = (4 / 3)
+def select_pointgoal_trajectory(trajectories, point_goal):
+    goals = torch.as_tensor(point_goal, device=trajectories.device,
+                            dtype=trajectories.dtype)[:, None, :2]
+    endpoint_cost = torch.linalg.vector_norm(trajectories[:, :, -1, :2] - goals, dim=-1)
+    selected = endpoint_cost.argmin(dim=1)
+    batch = torch.arange(trajectories.shape[0], device=trajectories.device)
+    return trajectories[batch, selected], endpoint_cost, selected
+
 def to_numpy(tensor: torch.Tensor) -> np.ndarray:
     return tensor.detach().cpu().numpy()
 def from_numpy(array: np.ndarray) -> torch.Tensor:
@@ -57,8 +65,9 @@ class NoMaDAgent(NoMadBaseAgent):
     ):
         super(NoMaDAgent, self).__init__(image_intrinsic, model_path, model_config_path, robot_config_path, device)
         self.nomad_former = NoMaDPolicy(self.cfg)
+        payload = torch.load(self.model_path, map_location="cpu", weights_only=True)
+        self.nomad_former.model.load_state_dict(payload, strict=True)
         self.nomad_former.to(self.device)
-        self.nomad_former.model.load_state_dict(torch.load(self.model_path, map_location=self.device), strict=True)
         self.nomad_former.eval()
         self.traj_generate = traj_opt.TrajOpt()
         with open(data_config_path, "r") as f:
@@ -93,9 +102,20 @@ class NoMaDAgent(NoMadBaseAgent):
                 output_actions[:,:,:2] *= self.MAX_V / self.RATE
             trajectory = self.traj_generate.TrajGeneratorFromPFreeRot(output_actions[:,:,0:2],step=0.1)
             
-            reshape_trajectory = trajectory.reshape(self.batch_size,sample_num,trajectory.shape[1],-1)
-            reshape_keypoints = output_actions.reshape(self.batch_size,sample_num,output_actions.shape[1],-1)
+            reshape_trajectory = trajectory.reshape(sample_num,self.batch_size,trajectory.shape[1],-1).transpose(0, 1)
+            reshape_keypoints = output_actions.reshape(sample_num,self.batch_size,output_actions.shape[1],-1).transpose(0, 1)
             return reshape_keypoints,reshape_trajectory[:,0],reshape_trajectory
+
+    def step_pointgoal(self, image, point_goal, sample_num=16):
+        """Adapt goal-masked NoMaD samples to PointGoal by endpoint ranking.
+
+        No goal image or privileged state is synthesized. The frozen NoMaD
+        checkpoint proposes trajectories from RGB history; selection minimizes
+        endpoint distance to the camera-frame PointGoal.
+        """
+        keypoints, _, trajectories = self.step_nogoal(image, sample_num=sample_num)
+        chosen, endpoint_cost, selected = select_pointgoal_trajectory(trajectories, point_goal)
+        return keypoints, chosen, trajectories, endpoint_cost, selected
 
     def step_imagegoal(self, goal_image, image, sample_num=8):
         with torch.no_grad():
