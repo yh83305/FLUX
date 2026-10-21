@@ -113,6 +113,15 @@ def next_missing(done, count):
     return first
 
 
+def remaining_ids(done, planned):
+    if not set(done).issubset(planned):
+        raise RuntimeError('Unexpected episode outside planned sparse set')
+    remaining = [i for i in planned if i not in done]
+    if remaining and any(i in done for i in planned[planned.index(remaining[0]):]):
+        raise RuntimeError('Non-contiguous completion within planned schedule')
+    return remaining
+
+
 def tail(path, size=65536):
     try:
         with Path(path).open("rb") as stream:
@@ -272,9 +281,13 @@ class Suite:
         root.mkdir(parents=True, exist_ok=True)
         failures_path = root / "retries.json"
         failures = read_json(failures_path, {})
+        planned = self.cfg.get('episode_ids', {}).get(name, {}).get(scene, list(range(self.count)))
+        if planned != sorted(set(planned)) or any(i not in range(self.count) for i in planned):
+            raise ValueError('Invalid planned episode IDs')
         while not self.stop:
             done = reconcile(root, self.count)
-            start = next_missing(done, self.count)
+            remaining = remaining_ids(done, planned)
+            start = remaining[0] if remaining else self.count
             if start == self.count:
                 self.status(root, "complete", completed=len(done))
                 (root / "COMPLETE").touch()
@@ -294,7 +307,8 @@ class Suite:
                 "--port", str(model["port"]), "--gpu_id", "0",
                 "--scene_dir", self.cfg["dataset"] + "/scene_views/" + scene,
                 "--scene_index", "0", "--scene_scale", "1", "--num_envs", "1",
-                "--episode_start", str(start), "--num_episodes", str(self.count-start),
+                "--episode_start", str(start), "--num_episodes", str(len(remaining)),
+                "--episode_ids", ','.join(map(str, remaining)),
                 "--controller", self.cfg.get("controller", "native"),
                 "--speed", ".5", "--stop_threshold", "-3", "--output_dir", str(out)]
             atomic_json(out / "command.json", command)
@@ -311,9 +325,9 @@ class Suite:
                         done = reconcile(root, self.count)
                         progress = read_json(out / "progress.json")
                         self.status(root, "running", model=name, scene=scene, gpu=gpu,
-                                    completed=len(done), next_episode=next_missing(done, self.count),
+                                    completed=len(done), next_episode=next(iter(remaining_ids(done, planned)), None),
                                     progress=progress, attempt=str(out))
-                        if len(done) == self.count:
+                        if len(done) == len(planned):
                             reason = "all_artifacts_complete"
                             break
                         text = tail(out / "eval.log")
@@ -340,7 +354,7 @@ class Suite:
                     self.stop_sim(out)
                     proc.wait(timeout=30)
             done = reconcile(root, self.count)
-            failed = next_missing(done, self.count)
+            failed = next(iter(remaining_ids(done, planned)), self.count)
             atomic_json(out / "termination.json", dict(reason=reason, exit_code=proc.returncode,
                                                        completed=len(done), next_episode=failed))
             if self.stop:
@@ -377,7 +391,7 @@ class Suite:
                     self.run_scene(name, model, gpu, scene)
                     if self.stop:
                         return
-                self.status(output, "complete", episodes=self.count * len(self.cfg["scenes"]))
+                self.status(output, "complete", episodes=sum(len(self.cfg.get('episode_ids', {}).get(name, {}).get(s, list(range(self.count)))) for s in self.cfg['scenes']))
                 (output / "COMPLETE").touch()
             except Exception as exc:
                 self.status(output, "blocked", error=str(exc))
@@ -515,10 +529,12 @@ class Suite:
         for name in self.cfg["models"]:
             if not (self.root / name / "COMPLETE").exists():
                 tasks.put(name)
-        self.status(self.root, "running", planned=len(self.cfg["models"]) * len(self.cfg["scenes"]) * self.count)
+        self.status(self.root, "running", planned=sum(len(self.cfg.get('episode_ids', {}).get(n, {}).get(s, list(range(self.count)))) for n in self.cfg['models'] for s in self.cfg['scenes']))
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.cfg["gpus"])) as pool:
             list(pool.map(lambda gpu: self.worker(gpu, tasks), self.cfg["gpus"]))
         complete = all((self.root / name / "COMPLETE").exists() for name in self.cfg["models"])
+        if complete and self.cfg.get('on_complete_command'):
+            subprocess.run(self.cfg['on_complete_command'], check=True)
         self.status(self.root, "complete" if complete else "paused" if self.stop else "blocked")
         if complete:
             (self.root / "COMPLETE").touch()

@@ -67,6 +67,9 @@ def test_persistent_failure_format(tmp_path):
     module.atomic_json(path, {"7": 3})
     assert module.read_json(path)["7"] == 3
     assert module.next_missing(dict.fromkeys(range(100)), 100) == 100
+    assert module.remaining_ids({1: {}, 2: {}}, [1, 2, 7, 18]) == [7, 18]
+    with pytest.raises(RuntimeError):
+        module.remaining_ids({2: {}}, [1, 2, 7])
 
 
 def test_scene_keeps_two_episodes_in_one_process(tmp_path, monkeypatch):

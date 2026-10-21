@@ -32,6 +32,7 @@ parser.add_argument('--terminate-on-pedestrian-collision', action=argparse.Boole
 parser.add_argument('--controller', choices=('native', 'lookahead'), default='native',
                     help='native preserves per-policy routing; lookahead uses the same heading-aware MPC for all policies')
 parser.add_argument('--record-control-debug', action='store_true')
+parser.add_argument('--episode_ids', default=None, help='Comma-separated increasing IDs; run in one scene process')
 args_cli = parser.parse_args()
 
 import os
@@ -584,7 +585,15 @@ def planning_thread(env, camera_intrinsic):
 def main():
     if args_cli.episode_start < 0 or args_cli.num_episodes <= 0:
         raise ValueError("episode_start must be non-negative and num_episodes positive")
-    episode_end = args_cli.episode_start + args_cli.num_episodes
+    from episode_schedule import resolve_episode_ids
+    episode_ids = resolve_episode_ids(args_cli.episode_start, args_cli.num_episodes, args_cli.episode_ids)
+    args_cli.episode_start = episode_ids[0]
+    args_cli.num_episodes = len(episode_ids)
+    episode_end = episode_ids[-1] + 1
+    print('[EPISODE SCHEDULE]', episode_ids, flush=True)
+    episode_cursor = 0
+    if args_cli.episode_ids is not None and args_cli.num_envs != 1:
+        raise ValueError('Sparse episode scheduling requires one environment')
     scene_list = os.listdir(args_cli.scene_dir)
     scene_list.sort()
 
@@ -1118,7 +1127,7 @@ def main():
                         env.unwrapped,
                         np.full(
                             args_cli.num_envs,
-                            (current_episode_idx + 1) % episode_end,
+                            episode_ids[(episode_cursor + 1) % len(episode_ids)],
                             dtype=np.int64,
                         ),
                     )
@@ -1131,7 +1140,7 @@ def main():
                         env.unwrapped,
                         np.full(
                             args_cli.num_envs,
-                            (current_episode_idx + 1) % episode_end,
+                            episode_ids[(episode_cursor + 1) % len(episode_ids)],
                             dtype=np.int64,
                         ),
                     )
@@ -1206,10 +1215,10 @@ def main():
                                 gc.collect()
                         elif fps_writer[i] is not None:
                             fps_writer[i].close()
-                        current_episode_idx += 1
+                        episode_cursor += 1
                         bench_timing.write_metrics(evaluation_metrics, save_dir + "metric.csv")
 
-                        if current_episode_idx >= episode_end:
+                        if episode_cursor >= len(episode_ids):
                             print(
                                 f"\n[INFO] Episodes {args_cli.episode_start} "
                                 f"through {episode_end - 1} completed!"
@@ -1237,6 +1246,7 @@ def main():
                         # Invalidate the old generation atomically with
                         # clearing its output.  An in-flight planner can then
                         # finish, but its result will be discarded.
+                        current_episode_idx = episode_ids[episode_cursor]
                         with input_lock:
                             planning_input.episode_generation = current_episode_idx
                             with output_lock:
