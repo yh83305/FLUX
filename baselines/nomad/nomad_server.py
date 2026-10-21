@@ -56,13 +56,13 @@ def nomad_reset():
         format_time = datetime.datetime.fromtimestamp(time.time())
         format_time = format_time.strftime("%Y-%m-%d %H:%M:%S")
         nomad_fps_writer = imageio.get_writer("{}_fps_pointgoal.mp4".format(format_time),fps=7)
-    return jsonify({"algo":"nomad"})
+    return jsonify({"algo":"nomad_pointgoal_adapter"})
 
 @app.route("/navigator_reset_env",methods=['POST'])
 def nomad_reset_env():
     global nomad_navigator,nomad_fps_writer
     nomad_navigator.reset_env(int(request.get_json().get('env_id')))
-    return jsonify({"algo":"nomad"})
+    return jsonify({"algo":"nomad_pointgoal_adapter"})
 
 @app.route("/pointgoal_step",methods=['POST'])
 def nomad_step_pointgoal():
@@ -148,4 +148,3 @@ def nomad_step_imagegoal():
 
 if __name__ == "__main__":
     app.run(host=args.host,port=args.port)
-
