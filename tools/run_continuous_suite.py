@@ -200,7 +200,8 @@ class Suite:
         output = self.root / name
         output.mkdir(exist_ok=True)
         logfile = (output / f"server_{time.time_ns()}.log").open("w")
-        env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(gpu),
+        server_gpu = model.get("server_gpu", gpu)
+        env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(server_gpu),
                    OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
         proc = subprocess.Popen(model["server_command"], env=env, cwd=output,
                                 stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True)
@@ -208,7 +209,7 @@ class Suite:
         identity = process_identity(proc.pid)
         atomic_json(output / "owned_server.json", dict(
             pid=proc.pid, start_ticks=identity["start_ticks"],
-            argv=[x.decode() for x in identity["argv"]]))
+            argv=[x.decode() for x in identity["argv"]], physical_gpu=server_gpu))
         for _ in range(120):
             if self.stop or proc.poll() is not None:
                 raise RuntimeError(f"{name} server exited or suite stopped")

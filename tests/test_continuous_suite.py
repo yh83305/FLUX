@@ -143,3 +143,20 @@ def test_healthy_existing_office_is_not_restarted(tmp_path, monkeypatch):
     monkeypatch.setattr(module.subprocess, "run", forbidden)
     suite.check_dependencies()
     assert not (tmp_path / "new/dependency_navdp_retries.json").exists()
+
+
+def test_server_gpu_can_be_isolated_from_simulator_gpu(tmp_path, monkeypatch):
+    suite = module.Suite(dict(output=str(tmp_path)))
+    captured = {}
+    class Process:
+        pid = 123
+        def poll(self): return None
+    def spawn(command, **kwargs):
+        captured.update(kwargs)
+        return Process()
+    monkeypatch.setattr(module.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(module, 'process_identity', lambda pid: dict(start_ticks='1', argv=[b'python']))
+    monkeypatch.setattr(suite, 'healthy', lambda model: True)
+    suite.start_server('nomad', dict(port=1, server_gpu=0, server_command=['python']), gpu=1)
+    assert captured['env']['CUDA_VISIBLE_DEVICES'] == '0'
+    suite.server.clear()
