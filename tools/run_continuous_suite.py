@@ -295,6 +295,7 @@ class Suite:
                 "--scene_dir", self.cfg["dataset"] + "/scene_views/" + scene,
                 "--scene_index", "0", "--scene_scale", "1", "--num_envs", "1",
                 "--episode_start", str(start), "--num_episodes", str(self.count-start),
+                "--controller", self.cfg.get("controller", "native"),
                 "--speed", ".5", "--stop_threshold", "-3", "--output_dir", str(out)]
             atomic_json(out / "command.json", command)
             self.status(root, "running", model=name, scene=scene, gpu=gpu, completed=len(done),

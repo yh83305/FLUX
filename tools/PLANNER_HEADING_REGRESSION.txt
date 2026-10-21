@@ -1,0 +1,34 @@
+Planner heading regression (2026-10-21)
+
+Diagnosis:
+  In the original 100 Full_Warehouse episodes, iPlanner had 40 and ViPlanner
+  had 39 non-collision episodes ending at exactly 4.5 simulation seconds
+  with effectively zero displacement. Every such case had an initial goal
+  more than 90 degrees behind the robot. There were 42 behind-goal episodes.
+  The ordinary MPC has nonnegative speed, zero heading tracking weight and
+  a 1.5-second horizon. Behind-path inputs reproduce near-zero speed AND yaw
+  commands with its zero initialization. This is not an Isaac process hang.
+
+Correction:
+  --controller lookahead explicitly selects ModeMPCController for ALL
+  policies. This is the existing controller used by GRPO-rule, including
+  its far-position and far-heading objective; model weights, inference,
+  generated waypoints, speed limits and termination rules are unchanged.
+  --controller native preserves historical routing for reproducibility.
+  No switch based on model identity, reward or success is introduced.
+  Both smoke and continuous-suite configs support controller=lookahead.
+
+Tests:
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONPATH=<repo> \
+    <Isaac Python> <repo>/tests/test_heading_mpc.py
+  Covers native backward deadlock, left/right/180-degree turning, forward
+  tracking and invariance to world translation/rotation. CPU only.
+  Live smoke runs episodes 7,8,9 in ONE process per model, preserving reset
+  and continuous-rollout behavior. control_debug.jsonl records commanded
+  and measured velocities, robot pose, goal and selected world trajectory.
+
+Reporting:
+  Improved ability to start moving is not proof of task success or collision
+  avoidance. Compare complete metrics and videos. Do not merge repaired
+  controller results with historical native-controller rows. Full reruns
+  require a new output directory and an explicit lookahead configuration.
