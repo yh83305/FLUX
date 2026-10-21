@@ -17,6 +17,10 @@ import subprocess
 import time
 import urllib.request
 import urllib.error
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from trajectory_recorder import trajectory_complete
 
 
 def atomic_json(path, value):
@@ -79,6 +83,7 @@ def accepted_rows(folder, count):
             video = folder / f'fps_{int(row["episode"])}.mp4'
             if (int(row["timing_requests"]) > 0 and video.exists()
                     and video.stat().st_size > 1000
+                    and trajectory_complete(folder, row['episode'], row['time_to_goal'])
                     and all(math.isfinite(float(row[k]))
                             for k in ("success", "spl", "time_to_goal", "trajectory_length"))):
                 result.append(row)

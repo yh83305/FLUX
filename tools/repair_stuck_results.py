@@ -7,6 +7,10 @@ import json
 from pathlib import Path
 import shutil
 from collections import defaultdict
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from trajectory_recorder import trajectory_complete
 
 
 def digest(path):
@@ -145,6 +149,7 @@ def publish(p):
         rows = [r for r in csv.DictReader((result/'metric.csv').open()) if int(r['episode']) == row['episode']]
         assert len(rows) == 1 and rows[0] == record['metric']
         assert (result/f"fps_{row['episode']}.mp4").stat().st_size > 1000
+        assert trajectory_complete(result, row['episode'], record['metric']['time_to_goal'])
         record['repair'] = dict(controller='lookahead', supersedes=str(Path(p['archive'])/'markers'/Path(row['marker']).relative_to(source)), protocol=p['protocol'])
         new_records.append((Path(row['marker']), record))
     for mark, record in new_records:

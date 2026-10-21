@@ -1,0 +1,65 @@
+World-state trajectory recording
+================================
+
+runtime_fix/eval_render_safe.py enables --record-trajectories by default.
+Use --no-record-trajectories to opt out. Supported topology: num_envs=1.
+No running snapshot is modified when this code is committed/deployed.
+
+Files beside metric.csv:
+  trajectory_config.json
+  trajectories/episode_007.jsonl
+  trajectories/episode_008.jsonl.partial   (interrupted/uncommitted)
+
+Each stream contains:
+  metadata: schema, scene/algorithm/controller, units, coordinate frame,
+            quaternion order, time step and measurement sources.
+  frame: original episode ID, step, episode_time_s, sim_time_s, phase,
+         robot position_world_m (xyz), quaternion_wxyz, yaw_rad,
+         linear_velocity_world_mps (xyz), angular_velocity_world_radps (xyz),
+         pedestrians [{id: full character USD prim path, position_world_m,
+                       velocity_world_mps}], people_valid,
+         terminal flag and active termination_terms.
+  end: complete flag, frame/step count, success and episode duration.
+
+Frame 0 is sampled immediately before the first navigation step, excluding
+initialization and first-plan waiting. Subsequent frames are captured after
+physics and termination computation, BEFORE IsaacLab auto-reset. A complete
+N-step episode has N+1 frames including the terminal state, not the next
+episode's reset pose. No RGB, depth, candidate trajectories or body joints
+are written. At the current step_dt=.15s sampling is approximately 6.67Hz,
+NOT the video's 10 FPS. Episode time counts executed environment steps;
+sim_time_s is the physics SimulationContext clock, not wall time.
+
+Robot values are the native IsaacLab articulation root_state_w quantities
+in simulator world coordinates, not the observation camera pose or planned
+waypoints. Pedestrian positions come from the live CharacterPositionManager.
+Their velocity is a backward finite difference over consecutive sim_time_s
+samples, not a desired walking speed. First observations, reappearing IDs
+after missing samples and zero time differences have null velocity. Finite
+differences are interval averages, not exact instantaneous physics velocity.
+An observed paused pedestrian has approximately zero velocity; missing actors
+are absent, never synthesized at the origin. IDs are stable within an episode;
+use (episode, id) as the key across resets. people_valid follows the existing
+position reader's has_people flag, not a camera visibility/occlusion flag.
+
+Record format is streaming and line-buffered, with O(number_of_pedestrians)
+state. JSON numbers must be finite. Complete files are fsynced and atomically
+renamed from .partial after terminal capture and metric writing. Interruptions
+leave .partial files; a hard kill may truncate the last line, while earlier
+complete JSON lines remain readable. No existing episode file is overwritten.
+Continuous/smoke acceptance requires a matching complete trajectory if the
+run's trajectory_config.json enables it. Old runs without that configuration
+remain readable but do NOT retroactively gain trajectories.
+
+The recorder temporarily wraps the termination manager's compute method for
+one env.step and restores the original binding even on exceptions. This relies
+on the audited IsaacLab step ordering (compute before _reset_idx); a changed
+runtime that omits/repeats that call fails loudly instead of silently recording
+incorrect terminal data. No return values, actions, rewards or terminations
+are changed. Actual IsaacLab/GPU smoke is still required on a new runtime.
+
+Tests:
+  PYTHONPATH=. python3 -m pytest -q tests/test_trajectory_recorder.py
+Tests cover finite differences, identity order/gaps, episode boundaries,
+partial files, artifact validation, nonfinite data and terminal capture before
+a simulated auto-reset. The latter tests hook behavior without running Isaac.

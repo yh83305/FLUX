@@ -13,6 +13,10 @@ import subprocess
 import threading
 import time
 import urllib.request
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from trajectory_recorder import trajectory_complete
 
 p = argparse.ArgumentParser()
 p.add_argument("--config", type=Path, required=True)
@@ -150,6 +154,7 @@ def worker_on_gpu(name, m):
                 for row in rows:
                     assert int(row["timing_requests"]) > 0
                     assert (folder/f'fps_{int(row["episode"])}.mp4').stat().st_size > 1000
+                    assert trajectory_complete(folder, row['episode'], row['time_to_goal'])
                 assert "[INFO] Cleanup complete" in (folder/"eval.log").read_text(errors="replace")
                 events = [json.loads(x) for x in (folder/"offscreen_guard.jsonl").read_text().splitlines()]
                 assert any(x.get("callbacks", 0) > 0 for x in events)

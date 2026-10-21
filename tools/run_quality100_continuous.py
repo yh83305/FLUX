@@ -9,6 +9,10 @@ import re
 import shlex
 import subprocess
 import time
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from trajectory_recorder import trajectory_complete
 
 
 def completed_rows(folder):
@@ -26,7 +30,8 @@ def completed_rows(folder):
         if len(ids) != len(set(ids)):
             raise ValueError("Duplicate metric episode IDs")
         return [x for x in rows if int(x["timing_requests"]) > 0
-                and (folder/f'fps_{int(x["episode"])}.mp4').stat().st_size > 1000]
+                and (folder/f'fps_{int(x["episode"])}.mp4').stat().st_size > 1000
+                and trajectory_complete(folder, x['episode'], x.get('time_to_goal', 0))]
     except (OSError, ValueError, KeyError):
         return []
 

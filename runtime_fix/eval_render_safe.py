@@ -32,8 +32,12 @@ parser.add_argument('--terminate-on-pedestrian-collision', action=argparse.Boole
 parser.add_argument('--controller', choices=('native', 'lookahead'), default='native',
                     help='native preserves per-policy routing; lookahead uses the same heading-aware MPC for all policies')
 parser.add_argument('--record-control-debug', action='store_true')
+parser.add_argument('--record-trajectories', action=argparse.BooleanOptionalAction, default=True,
+                    help='Save actual world-state trajectories, including pre-reset terminal states')
 parser.add_argument('--episode_ids', default=None, help='Comma-separated increasing IDs; run in one scene process')
 args_cli = parser.parse_args()
+if args_cli.record_trajectories and args_cli.num_envs != 1:
+    parser.error('Trajectory recording currently requires --num_envs 1; use --no-record-trajectories otherwise')
 
 import os
 import sys
@@ -746,6 +750,11 @@ def main():
     if not save_dir.endswith(os.sep):
         save_dir += os.sep
     os.makedirs(save_dir, exist_ok=True)
+    with open(os.path.join(save_dir, 'trajectory_config.json'), 'w') as handle:
+        json.dump(dict(enabled=args_cli.record_trajectories,
+                       schema='dynbench_world_trajectories_v1',
+                       interval_s=float(env.unwrapped.step_dt),
+                       output='trajectories/episode_XXX.jsonl'), handle, indent=2)
     with open(os.path.join(save_dir, 'controller_config.json'), 'w') as handle:
         json.dump(dict(selection=args_cli.controller, speed=args_cli.speed,
                        native_routing='ModeMPCController for selector_diagnostics; MPC_Controller otherwise',
@@ -841,6 +850,12 @@ def main():
 
     first_plan_wait_since = None
     last_progress_write = 0.0
+    trajectory_recorder = None
+    if args_cli.record_trajectories:
+        from trajectory_recorder import IsaacTrajectoryRecorder
+        trajectory_recorder = IsaacTrajectoryRecorder(
+            save_dir, env, get_people_positions,
+            dict(scene=scene_name, algorithm=algo, controller=args_cli.controller))
     try:
         while simulation_app.is_running():
             if time.monotonic() - last_progress_write >= 5:
@@ -1131,7 +1146,9 @@ def main():
                             dtype=np.int64,
                         ),
                     )
-                    obs, rewards, dones, infos = env.step(action)
+                    obs, rewards, dones, infos = (
+                        trajectory_recorder.step(env, action, current_episode_idx)
+                        if trajectory_recorder is not None else env.step(action))
                     episode_steps += 1
                     trajectory_length += (infos['observations']['policy'][:, 0] * env.unwrapped.step_dt).cpu().numpy()
                 else:
@@ -1144,7 +1161,9 @@ def main():
                             dtype=np.int64,
                         ),
                     )
-                    obs, rewards, dones, infos = env.step(action)
+                    obs, rewards, dones, infos = (
+                        trajectory_recorder.step(env, action, current_episode_idx)
+                        if trajectory_recorder is not None else env.step(action))
                     episode_steps += 1
                     print("Trajectory not ready; zero action")
 
@@ -1217,6 +1236,8 @@ def main():
                             fps_writer[i].close()
                         episode_cursor += 1
                         bench_timing.write_metrics(evaluation_metrics, save_dir + "metric.csv")
+                        if trajectory_recorder is not None:
+                            trajectory_recorder.finish_episode(evaluation_metrics[-1])
 
                         if episode_cursor >= len(episode_ids):
                             print(
@@ -1359,6 +1380,11 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
+        try:
+            if trajectory_recorder is not None:
+                trajectory_recorder.close()
+        except Exception as exc:
+            print(f'[TRAJECTORY] Failed to close partial log: {exc}', flush=True)
         if 'guard_close' in locals(): guard_close()
         cleanup_simulation(
             env=env if 'env' in locals() else None,
